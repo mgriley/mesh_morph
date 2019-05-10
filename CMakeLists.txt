@@ -37,7 +37,8 @@ file(GLOB SOURCES "src/*.cpp" "src/*.c")
 list(REMOVE_ITEM SOURCES ${DRIVER})
 add_library(main_lib STATIC ${SOURCES})
 target_include_directories(main_lib PUBLIC include)
-target_link_libraries(main_lib PUBLIC glfw Vulkan::Vulkan imgui) 
+target_link_libraries(main_lib PUBLIC glfw Vulkan::Vulkan imgui
+  ${VULKAN_PATH}/lib/libshaderc_combined.a) 
 # pass the manifest file locations to the exec instead of
 # specifying them on the command-line every time
 target_compile_definitions(main_lib PUBLIC

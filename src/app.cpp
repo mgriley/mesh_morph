@@ -1,10 +1,13 @@
 #include "app.h"
 #include "utils.h"
+#include "types.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
+
+#include <shaderc/shaderc.hpp>
 
 #include <chrono>
 #include <thread>
@@ -14,94 +17,9 @@
 #include <iostream>
 #include <sstream>
 #include <fstream>
-
-using namespace std;
-using namespace glm;
+#include <cstring>
 
 const int max_frames_in_flight = 2;
-
-struct Vertex {
-  vec3 pos;
-  vec3 color;
-  vec2 tex_coord;
-};
-
-struct UniformBufferObject {
-  mat4 model;
-  mat4 view;
-  mat4 proj;
-};
-
-struct AppState {
-  GLFWwindow* win = nullptr;
-  bool framebuffer_resized = false;
-
-  vector<uint16_t> indices;
-
-  PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils;
-
-  VkVertexInputBindingDescription binding_desc;
-  array<VkVertexInputAttributeDescription, 3> attr_descs;
-
-  VkInstance inst;
-  VkDebugUtilsMessengerEXT debug_messenger;
-  VkSurfaceKHR surface;
-  VkPhysicalDevice phys_device;
-  VkDevice device;
-  uint32_t target_family_index;
-  VkQueue queue;
-
-  VkSurfaceCapabilitiesKHR surface_caps;
-  VkSurfaceFormatKHR target_format;
-  VkPresentModeKHR target_present_mode;
-  VkExtent2D target_extent;
-  uint32_t target_image_count;
-
-  VkSwapchainKHR swapchain;
-  vector<VkImage> swapchain_images;
-  vector<VkImageView> swapchain_img_views;
-
-  VkRenderPass render_pass;
-  VkPipelineLayout pipeline_layout;
-  VkPipeline graphics_pipeline;
-  vector<VkFramebuffer> swapchain_framebuffers;
-
-  VkCommandPool cmd_pool;
-
-  VkBuffer vert_buffer;
-  VkDeviceMemory vert_buffer_mem;
-  VkBuffer index_buffer;
-  VkDeviceMemory index_buffer_mem;
-  vector<VkBuffer> unif_buffers;
-  vector<VkDeviceMemory> unif_buffers_mem;
-
-  VkDescriptorSetLayout desc_set_layout;
-  VkDescriptorPool desc_pool;
-  vector<VkDescriptorSet> desc_sets;
-
-  vector<VkCommandBuffer> cmd_buffers;
-
-  vector<VkSemaphore> img_available_semas;
-  vector<VkSemaphore> render_done_semas;
-  vector<VkFence> in_flight_fences;
-
-  VkImage texture_img;
-  VkDeviceMemory texture_img_mem;
-  VkImageView texture_img_view;
-  VkSampler texture_sampler;
-
-  VkImage depth_img;
-  VkDeviceMemory depth_img_mem;
-  VkImageView depth_img_view;
-
-  size_t current_frame;
-
-  AppState();
-};
-
-AppState::AppState()
-{
-}
 
 static void check_vk_result(VkResult res) {
   assert(res == VK_SUCCESS);
@@ -117,6 +35,82 @@ vector<char> read_file(const string& filename) {
   return buffer;
 }
 
+vector<UserUnif> parse_user_unifs(const string& shader_text) {
+  vector<UserUnif> unifs;
+
+  string block_start = "layout(binding = 1) uniform UserUnifs {";
+  string block_end = "} uu;";
+
+  const char* s = shader_text.c_str();
+  // read to start block
+  bool in_block = false;
+  while (true) {
+    if (!in_block) {
+      s = strchr(s, '\n');
+      if (!s) {
+        break;
+      }
+      s += 1;
+      if (strncmp(s, block_start.c_str(), block_start.size()) == 0) {
+        s = strchr(s, '\n') + 1;
+        in_block = true;
+      }
+    } else {
+      if (strncmp(s, block_end.c_str(), block_end.size()) == 0) {
+        break;
+      }
+      int num_comps = 4;
+      float min_val = 0.0;
+      float max_val = 1.0;
+      float drag_speed = 1.0;
+      vec4 def_val = vec4(0.0);
+      int num_matches = sscanf(s,
+          " // comps %d min %f max %f speed %f def %f %f %f %f",
+          &num_comps, &min_val, &max_val, &drag_speed,
+          &def_val[0], &def_val[1], &def_val[2], &def_val[3]);
+      assert(num_matches >= 1);
+      s = strchr(s, '\n') + 1;
+
+      char name[100];
+      num_matches = sscanf(s,
+        " vec4 %s;", name);
+      assert(num_matches == 1);
+      s = strchr(s, '\n') + 1;
+
+      UserUnif unif(name, num_comps, def_val,
+          min_val, max_val, drag_speed);
+      unifs.push_back(unif);
+    }
+  }
+  return unifs;
+}
+
+/*
+   Return spirv text and parses any user uniforms
+*/
+vector<uint32_t> process_file(
+    const string& src_name,
+    const string& filename,
+    shaderc_shader_kind kind,
+    vector<UserUnif>& out_unifs) {
+  using namespace shaderc;
+  Compiler compiler;
+  CompileOptions compile_options;
+
+  vector<char> glsl_source_vec = read_file(filename);
+  string glsl_source(glsl_source_vec.begin(), glsl_source_vec.end());
+
+  SpvCompilationResult res = compiler.CompileGlslToSpv(
+      glsl_source, kind, src_name.c_str(), compile_options);
+  if (res.GetCompilationStatus() != shaderc_compilation_status_success) {
+    printf("Compilation error:\n%s\n", res.GetErrorMessage().c_str());
+    return vector<uint32_t>();
+  }
+  out_unifs = parse_user_unifs(glsl_source);
+
+  return vector<uint32_t>(res.cbegin(), res.cend());
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
   VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
   VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -130,11 +124,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
   return VK_FALSE;
 }
 
-VkShaderModule create_shader_module(VkDevice& device, const vector<char>& code) {
+VkShaderModule create_shader_module(VkDevice& device,
+    const vector<uint32_t>& code) {
   VkShaderModuleCreateInfo create_info = {
     .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-    .codeSize = code.size(),
-    .pCode = reinterpret_cast<const uint32_t*>(code.data())
+    .codeSize = sizeof(code[0]) * code.size(),
+    .pCode = code.data()
   };
   VkShaderModule module;
   VkResult res = vkCreateShaderModule(device, &create_info, nullptr, &module);
@@ -707,10 +702,17 @@ void setup_descriptor_set_layout(AppState& state) {
 }
 
 void setup_graphics_pipeline(AppState& state) {
-  auto vert_shader_code = read_file("../shaders/vert.spv");
-  auto frag_shader_code = read_file("../shaders/frag.spv");
+  vector<UserUnif> vertex_unifs, frag_unifs;
+  auto vert_shader_code = process_file(
+      "vertex shader", "../shaders/basic.vert",
+      shaderc_glsl_vertex_shader, vertex_unifs);
+  auto frag_shader_code = process_file(
+      "frag shader", "../shaders/basic.frag",
+      shaderc_glsl_fragment_shader, frag_unifs);
   VkShaderModule vert_module = create_shader_module(state.device, vert_shader_code);
   VkShaderModule frag_module = create_shader_module(state.device, frag_shader_code);
+  // TODO - add on the frag unifs?
+  state.render_unifs = vertex_unifs;
 
   VkPipelineShaderStageCreateInfo vert_stage_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -806,7 +808,7 @@ void setup_graphics_pipeline(AppState& state) {
     .pSetLayouts = &state.desc_set_layout
   };
   VkResult res = vkCreatePipelineLayout(state.device, &pipeline_layout_info, nullptr,
-      &state.pipeline_layout);
+      &state.render_pipeline_layout);
   assert(res == VK_SUCCESS);
 
   VkGraphicsPipelineCreateInfo graphics_pipeline_info = {
@@ -821,7 +823,7 @@ void setup_graphics_pipeline(AppState& state) {
     .pDepthStencilState = &depth_stencil,
     .pColorBlendState = &color_blending,
     .pDynamicState = nullptr,
-    .layout = state.pipeline_layout,
+    .layout = state.render_pipeline_layout,
     .renderPass = state.render_pass,
     .subpass = 0,
     .basePipelineHandle = VK_NULL_HANDLE,
@@ -1260,7 +1262,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   // the desc sets specify the link between the binding points and actual
   // resources
   vkCmdBindDescriptorSets(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-      state.pipeline_layout, 0, 1, &state.desc_sets[i], 0, nullptr);
+      state.render_pipeline_layout, 0, 1, &state.desc_sets[i], 0, nullptr);
   //vkCmdDraw(cmd_buffers[i], (uint32_t) vertices.size(), 1, 0, 0);
   vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
       1, 0, 0, 0);
@@ -1315,7 +1317,7 @@ void cleanup_swapchain(AppState& state) {
       (uint32_t) state.cmd_buffers.size(), state.cmd_buffers.data());
 
   vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
-  vkDestroyPipelineLayout(state.device, state.pipeline_layout, nullptr);
+  vkDestroyPipelineLayout(state.device, state.render_pipeline_layout, nullptr);
   vkDestroyRenderPass(state.device, state.render_pass, nullptr);
   for (VkImageView& img_view : state.swapchain_img_views) {
     vkDestroyImageView(state.device, img_view, nullptr);
@@ -1532,6 +1534,18 @@ void init_glfw(AppState& state) {
       framebuffer_resize_callback);
 }
 
+void gen_user_uniforms_ui(vector<UserUnif>& user_unifs) {
+  bool should_reset_unifs = ImGui::Button("restore defaults");
+  for (UserUnif& user_unif : user_unifs) {
+    if (should_reset_unifs) {
+      user_unif.current_val = user_unif.default_val;
+    }
+    ImGui::DragScalarN(user_unif.name.c_str(), ImGuiDataType_Float,
+        &user_unif.current_val[0], user_unif.num_comps, user_unif.drag_speed,
+        &user_unif.min_val, &user_unif.max_val, "%.3f");
+  }
+}
+
 void upload_imgui_fonts(AppState& state) {
   VkCommandBuffer tmp_buffer = begin_single_time_commands(state);
   ImGui_ImplVulkan_CreateFontsTexture(tmp_buffer);
@@ -1561,7 +1575,7 @@ void main_loop(AppState& state) {
   ImGui_ImplVulkan_Init(&init_info, state.render_pass);
   upload_imgui_fonts(state);
 
-  bool show_demo_win = true;
+  bool show_dev_console = true;
   state.current_frame = 0;
   while (!glfwWindowShouldClose(state.win)) {
     glfwPollEvents();
@@ -1570,9 +1584,9 @@ void main_loop(AppState& state) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    if (show_demo_win) {
-      ImGui::ShowDemoWindow(&show_demo_win);
-    }
+    ImGui::Begin("dev console", &show_dev_console);
+    gen_user_uniforms_ui(state.render_unifs);
+    ImGui::End();
 
     ImGui::Render();
 
