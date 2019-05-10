@@ -1339,6 +1339,7 @@ void cleanup_swapchain(AppState& state) {
 
   vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
   vkDestroyPipelineLayout(state.device, state.render_pipeline_layout, nullptr);
+
   vkDestroyRenderPass(state.device, state.render_pass, nullptr);
   for (VkImageView& img_view : state.swapchain_img_views) {
     vkDestroyImageView(state.device, img_view, nullptr);
@@ -1387,6 +1388,17 @@ void cleanup_vulkan(AppState& state) {
   vkDestroyInstance(state.inst, nullptr);
 }
 
+void recreate_graphics_pipeline(AppState& state) {
+  vkDeviceWaitIdle(state.device);
+
+  // cleanup current pipeline
+  vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
+  vkDestroyPipelineLayout(state.device,
+      state.render_pipeline_layout, nullptr);
+
+  setup_graphics_pipeline(state);
+}
+
 void recreate_swapchain(AppState& state) {
   // if the window is minimized, wait until it comes to the foreground
   // again
@@ -1401,7 +1413,8 @@ void recreate_swapchain(AppState& state) {
   cleanup_swapchain(state);
 
   // TODO - figure out why these in particular must be
-  // called again. Not immediately obvious for some
+  // called again. Not sure why some (like uniform buffers)
+  // must be recreated?
   setup_swapchain(state);
   setup_renderpass(state);
   setup_graphics_pipeline(state);
@@ -1536,11 +1549,36 @@ void render_frame(AppState& state) {
   state.current_frame = (current_frame + 1) % max_frames_in_flight;
 }
 
-static void framebuffer_resize_callback(GLFWwindow* win,
+void framebuffer_resize_callback(GLFWwindow* win,
     int w, int h) {
   AppState* state = reinterpret_cast<AppState*>(
       glfwGetWindowUserPointer(win));
   state->framebuffer_resized = true;
+}
+
+void handle_key_event(GLFWwindow* win, int key, int scancode,
+    int action, int mods) {
+	AppState* state = reinterpret_cast<AppState*>(
+      glfwGetWindowUserPointer(win));
+
+	/*
+  if (key == GLFW_KEY_R && action == GLFW_PRESS) {
+    // reset camera pos
+		g_state->camera = Camera();
+  }
+  if (key == GLFW_KEY_F && action == GLFW_PRESS) {
+		controls.cam_spherical_mode = !controls.cam_spherical_mode;
+  }
+	*/
+  if (key == GLFW_KEY_P && action == GLFW_PRESS) {
+    printf("reloading program\n");
+		recreate_graphics_pipeline(*state);
+  }
+	/*
+  if (key == GLFW_KEY_C && action == GLFW_PRESS) {
+    run_simulation_pipeline(*g_state);  
+  }
+	*/
 }
 
 void init_glfw(AppState& state) {
@@ -1555,6 +1593,7 @@ void init_glfw(AppState& state) {
   glfwSetWindowUserPointer(state.win, &state);
   glfwSetFramebufferSizeCallback(state.win,
       framebuffer_resize_callback);
+  glfwSetKeyCallback(state.win, handle_key_event);
 }
 
 void gen_user_uniforms_ui(vector<UserUnif>& user_unifs) {
