@@ -9,7 +9,7 @@ set(CDIR ${CMAKE_CURRENT_SOURCE_DIR})
 # BDIR is the build/ directory
 set(BDIR ${CMAKE_CURRENT_BINARY_DIR})
 
-set(VULKAN_PATH ${CDIR}/vulkansdk-macos-1.1.106.0/macOS)
+set(VULKAN_PATH ${CDIR}/../vulkansdk-macos-1.1.106.0/macOS)
 set(ENV{VULKAN_SDK} ${VULKAN_PATH}) 
 
 find_package(glfw3 3.3 REQUIRED)
