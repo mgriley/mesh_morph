@@ -38,14 +38,14 @@ vector<char> read_file(const string& filename) {
 vector<UserUnif> parse_user_unifs(const string& shader_text) {
   vector<UserUnif> unifs;
 
-  string block_start = "layout(binding = 1) uniform UserUnifs {";
+  string block_start = "layout(push_constant) uniform UserUnifs {";
   string block_end = "} uu;";
 
   const char* s = shader_text.c_str();
-  // read to start block
   bool in_block = false;
   while (true) {
     if (!in_block) {
+      // read to the start block
       s = strchr(s, '\n');
       if (!s) {
         break;
@@ -56,6 +56,8 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
         in_block = true;
       }
     } else {
+      // until the end block is reached, read one comment line of specification followed
+      // by one line with the vec4 itself
       if (strncmp(s, block_end.c_str(), block_end.size()) == 0) {
         break;
       }
@@ -88,7 +90,7 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
 /*
    Return spirv text and parses any user uniforms
 */
-vector<uint32_t> process_file(
+vector<uint32_t> process_shader_file(
     const string& src_name,
     const string& filename,
     shaderc_shader_kind kind,
@@ -685,8 +687,8 @@ void setup_descriptor_set_layout(AppState& state) {
     .binding = 1,
     .descriptorCount = 1,
     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    .pImmutableSamplers = nullptr,
-    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    .pImmutableSamplers = nullptr
   };
   vector<VkDescriptorSetLayoutBinding> bindings = {
     ubo_layout_binding, sampler_layout_binding
@@ -703,10 +705,10 @@ void setup_descriptor_set_layout(AppState& state) {
 
 void setup_graphics_pipeline(AppState& state) {
   vector<UserUnif> vertex_unifs, frag_unifs;
-  auto vert_shader_code = process_file(
+  auto vert_shader_code = process_shader_file(
       "vertex shader", "../shaders/basic.vert",
       shaderc_glsl_vertex_shader, vertex_unifs);
-  auto frag_shader_code = process_file(
+  auto frag_shader_code = process_shader_file(
       "frag shader", "../shaders/basic.frag",
       shaderc_glsl_fragment_shader, frag_unifs);
   VkShaderModule vert_module = create_shader_module(state.device, vert_shader_code);
@@ -801,11 +803,19 @@ void setup_graphics_pipeline(AppState& state) {
     .depthBoundsTestEnable = VK_FALSE,
     .stencilTestEnable = VK_FALSE
   };
+  // Only allow push constants in the vertex shader for now
+  VkPushConstantRange push_constant_range = {
+    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+    .offset = 0,
+    .size = (uint32_t) (sizeof(vec4) * state.render_unifs.size())
+  };
   // descriptor sets for uniforms go here
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     .setLayoutCount = 1,
-    .pSetLayouts = &state.desc_set_layout
+    .pSetLayouts = &state.desc_set_layout,
+    .pushConstantRangeCount = 1,
+    .pPushConstantRanges = &push_constant_range
   };
   VkResult res = vkCreatePipelineLayout(state.device, &pipeline_layout_info, nullptr,
       &state.render_pipeline_layout);
@@ -1167,7 +1177,7 @@ void setup_descriptor_sets(AppState& state) {
   
   // for each descriptor set, set the resources for each of its bindings
   for (size_t i = 0; i < state.desc_sets.size(); ++i) {
-    VkDescriptorBufferInfo buffer_info = {
+    VkDescriptorBufferInfo ubo_buffer_info = {
       .buffer = state.unif_buffers[i],
       .offset = 0,
       .range = sizeof(UniformBufferObject)
@@ -1185,7 +1195,7 @@ void setup_descriptor_sets(AppState& state) {
       .dstArrayElement = 0,
       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
       .descriptorCount = 1,
-      .pBufferInfo = &buffer_info,
+      .pBufferInfo = &ubo_buffer_info,
       .pImageInfo = nullptr,
       .pTexelBufferView = nullptr
     };
@@ -1263,6 +1273,17 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   // resources
   vkCmdBindDescriptorSets(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
       state.render_pipeline_layout, 0, 1, &state.desc_sets[i], 0, nullptr);
+
+  // update push constants
+  vector<vec4> uu_values;
+  for (UserUnif& uu : state.render_unifs) {
+    uu_values.push_back(uu.current_val);
+  }
+  vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
+      VK_SHADER_STAGE_VERTEX_BIT, 0,
+      sizeof(uu_values[0]) * uu_values.size(),
+      uu_values.data());
+
   //vkCmdDraw(cmd_buffers[i], (uint32_t) vertices.size(), 1, 0, 0);
   vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
       1, 0, 0, 0);
@@ -1467,13 +1488,15 @@ void render_frame(AppState& state) {
     .model = model_mat,
     .view = view_mat,
     .proj = proj_mat
-  };
+  }; 
+
+  // update uniform buffer
   void* unif_data;
   vkMapMemory(state.device, state.unif_buffers_mem[img_index], 0,
-      sizeof(ubo), 0, &unif_data);
-  memcpy(unif_data, &ubo, sizeof(ubo));
+      sizeof(UniformBufferObject), 0, &unif_data);
+  memcpy(unif_data, &ubo, sizeof(UniformBufferObject));
   vkUnmapMemory(state.device, state.unif_buffers_mem[img_index]);
-
+  
   record_render_pass(state, img_index, state.indices);
 
   // submit cmd buffer to pipeline
