@@ -333,29 +333,25 @@ void enumerate_instance_layers() {
 }
 
 void setup_vertex_attr_desc(AppState& state) {
-  state.binding_desc = {
-    .binding = 0,
-    .stride = sizeof(Vertex),
-    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
-  };
-  state.attr_descs[0] = {
-    .binding = 0,
-    .location = 0,
-    .format = VK_FORMAT_R32G32B32_SFLOAT,
-    .offset = offsetof(Vertex, pos)
-  };
-  state.attr_descs[1] = {
-    .binding = 0,
-    .location = 1,
-    .format = VK_FORMAT_R32G32B32_SFLOAT,
-    .offset = offsetof(Vertex, color)
-  };
-  state.attr_descs[2] = {
-    .binding = 0,
-    .location = 2,
-    .format = VK_FORMAT_R32G32_SFLOAT,
-    .offset = offsetof(Vertex, tex_coord)
-  };
+  state.vert_binding_descs.clear();
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    VkVertexInputBindingDescription binding_desc = {
+      .binding = i,
+      .stride = sizeof(vec4),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+    };
+    state.vert_binding_descs.push_back(binding_desc);
+  }
+  state.vert_attr_descs.clear();
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    VkVertexInputAttributeDescription attr_desc = {
+      .binding = i,
+      .location = i,
+      .format = VK_FORMAT_R32G32B32_SFLOAT,
+      .offset = 0
+    };
+    state.vert_attr_descs.push_back(attr_desc);
+  }
 }
 
 void setup_instance(AppState& state) {
@@ -675,32 +671,57 @@ void setup_renderpass(AppState& state) {
   assert(res == VK_SUCCESS);
 }
 
-void setup_descriptor_set_layout(AppState& state) {
-  VkDescriptorSetLayoutBinding ubo_layout_binding = {
-    .binding = 0,
-    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-    .descriptorCount = 1,
-    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-    .pImmutableSamplers = nullptr
-  };
-  VkDescriptorSetLayoutBinding sampler_layout_binding = {
-    .binding = 1,
-    .descriptorCount = 1,
-    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-    .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-    .pImmutableSamplers = nullptr
-  };
-  vector<VkDescriptorSetLayoutBinding> bindings = {
-    ubo_layout_binding, sampler_layout_binding
-  };
+void setup_render_desc_set_layout(AppState& state) {
+  vector<VkDescriptorSetLayoutBinding> layout_bindings;
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    auto binding = {
+      .binding = i,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+      .descriptorCount = 1,
+      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+      .pImmutableSamplers = nullptr
+    };
+    layout_bindings.push_back(binding);
+  }
   VkDescriptorSetLayoutCreateInfo layout_info = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-    .bindingCount = (uint32_t) bindings.size(),
+    .bindingCount = (uint32_t) layout_bindings.size(),
+    .pBindings = layout_bindings.data()
+  };
+  VkResult res = vkCreateDescriptorSetLayout(state.device,
+      &layout_info, &state.render_desc_set_layout);
+  assert(res == VK_SUCCESS);
+}
+
+void setup_compute_desc_set_layout(AppState& state) {
+  // TODO - add in the bindings for the shared shader storage
+
+  // we need a texel buffer for each input attr and a buffer
+  // for each output attribute
+  vector<VkDescriptorSetLayoutBinding> bindings;
+  for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
+    auto binding = {
+      .binding = i,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+      .descriptorCount = 1,
+      .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+      .pImmutableSamplers = nullptr
+    };
+    bindings.push_back(binding);
+  }
+  VkDescriptorSetLayoutCreateInfo layout_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+    .bindingCOunt = (uint32_t) bindings.size(),
     .pBindings = bindings.data()
   };
-  VkResult res = vkCreateDescriptorSetLayout(state.device, &layout_info, nullptr,
-      &state.desc_set_layout);
+  VkResult res = vkCreateDescriptorSetLayout(state.device,
+      &layout_info, &state.compute_desc_set_layout);
   assert(res == VK_SUCCESS);
+}
+
+void setup_desc_set_layouts(AppState& state) {
+  setup_render_desc_set_layout(state);
+  setup_compute_desc_set_layout(state);
 }
 
 void setup_graphics_pipeline(AppState& state) {
@@ -714,7 +735,7 @@ void setup_graphics_pipeline(AppState& state) {
   VkShaderModule vert_module = create_shader_module(state.device, vert_shader_code);
   VkShaderModule frag_module = create_shader_module(state.device, frag_shader_code);
   // TODO - add on the frag unifs?
-  state.render_unifs = vertex_unifs;
+  state.render_unifs = std::move(vertex_unifs);
 
   VkPipelineShaderStageCreateInfo vert_stage_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -733,10 +754,10 @@ void setup_graphics_pipeline(AppState& state) {
   };
   VkPipelineVertexInputStateCreateInfo vertex_input_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-    .vertexBindingDescriptionCount = 1,
-    .pVertexBindingDescriptions = &state.binding_desc,
-    .vertexAttributeDescriptionCount = (uint32_t) state.attr_descs.size(),
-    .pVertexAttributeDescriptions = state.attr_descs.data()
+    .vertexBindingDescriptionCount = (uint32_t) state.vert_binding_descs.size(),
+    .pVertexBindingDescriptions = state.vert_binding_descs.data(),
+    .vertexAttributeDescriptionCount = (uint32_t) state.vert_attr_descs.size(),
+    .pVertexAttributeDescriptions = state.vert_attr_descs.data()
   };
   VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -809,11 +830,10 @@ void setup_graphics_pipeline(AppState& state) {
     .offset = 0,
     .size = (uint32_t) (sizeof(vec4) * state.render_unifs.size())
   };
-  // descriptor sets for uniforms go here
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
     .setLayoutCount = 1,
-    .pSetLayouts = &state.desc_set_layout,
+    .pSetLayouts = &state.render_desc_set_layout,
     .pushConstantRangeCount = 1,
     .pPushConstantRanges = &push_constant_range
   };
@@ -845,6 +865,46 @@ void setup_graphics_pipeline(AppState& state) {
 
   vkDestroyShaderModule(state.device, vert_module, nullptr);
   vkDestroyShaderModule(state.device, frag_module, nullptr);
+}
+
+void setup_compute_pipeline(AppState& state) {
+  auto shader_code = process_shader_file(
+      "compute shader", "../shaders/morph.compute",
+      shaderc_glsl_compute_shader, state.compute_unifs);
+  VkShaderModule shader_module = create_shader_module(
+      state.device, shader_code);
+
+  VkPipelineShaderStageCreateInfo stage_info = {
+    .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+    .module = shader_module,
+    .pName = "main"
+  };
+  VkPushConstantRange push_constant_range = {
+    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+    .offset = 0,
+    .size = (uint32_t) (sizeof(vec4) * state.compute_unifs.size())
+  };
+  VkPipelineLayoutCreateInfo pipeline_layout_info = {
+    .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    .setLayoutCount = 1,
+    .pSetLayouts = &state.compute_desc_set_layout,
+    .pushConstantRangeCount = 1,
+    .pPushConstantRanges = &push_constant_range
+  };
+  VkResult res = vkCreatePipelineLayout(state.device, &pipeline_layout_info,
+      &state.compute_pipeline_layout);
+
+  VkComputePipelineCreateInfo compute_pipeline_info = {
+    .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+    .stage = &stage_info,
+    .layout = state.compute_pipeline_layout
+  };
+  res = vkCreateComputePipelines(state.device, VK_NULL_HANDLE, 1,
+      &compute_pipeline_info, nullptr, &state.compute_pipeline);
+  assert(res == VK_SUCCESS);
+
+  vkDestroyShaderModule(state.device, shader_module, nullptr);
 }
 
 void setup_framebuffers(AppState& state) {
@@ -1002,78 +1062,6 @@ void transition_image_layout(AppState& state, VkImage img,
   end_single_time_commands(state, tmp_cmd_buffer);
 }
 
-void setup_texture_image(AppState& state) {
-  int tex_w, tex_h, tex_channels;
-  stbi_uc* pixels = stbi_load("../textures/sample_tex.jpg",
-      &tex_w, &tex_h, &tex_channels, STBI_rgb_alpha);
-  VkDeviceSize img_size = tex_w * tex_h * 4;
-  assert(pixels);
-
-  VkBuffer staging_buffer;
-  VkDeviceMemory staging_buffer_mem;
-
-  create_buffer(state.device, state.phys_device, img_size,
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      staging_buffer, staging_buffer_mem);
-  void* data;
-  vkMapMemory(state.device, staging_buffer_mem, 0, img_size, 0, &data);
-  memcpy(data, pixels, (size_t) img_size);
-  vkUnmapMemory(state.device, staging_buffer_mem);
-  
-  stbi_image_free(pixels);
-
-  create_image(state, tex_w, tex_h, VK_FORMAT_R8G8B8A8_UNORM,
-      VK_IMAGE_TILING_OPTIMAL,
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-        VK_IMAGE_USAGE_SAMPLED_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      state.texture_img, state.texture_img_mem);
-
-  transition_image_layout(state, state.texture_img,
-      VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED,
-      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-  copy_buffer_to_image(state, staging_buffer, state.texture_img, (uint32_t) tex_w,
-      (uint32_t) tex_h);
-  transition_image_layout(state, state.texture_img,
-      VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-  vkDestroyBuffer(state.device, staging_buffer, nullptr);
-  vkFreeMemory(state.device, staging_buffer_mem, nullptr);
-}
-
-void setup_texture_image_view(AppState& state) {
-  state.texture_img_view = create_image_view(state,
-      state.texture_img, VK_FORMAT_R8G8B8A8_UNORM,
-      VK_IMAGE_ASPECT_COLOR_BIT);
-}
-
-void setup_texture_sampler(AppState& state) {
-  VkSamplerCreateInfo sampler_info = {
-    .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-    .magFilter = VK_FILTER_LINEAR,
-    .minFilter = VK_FILTER_LINEAR,
-    .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-    .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-    .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-    .anisotropyEnable = VK_FALSE,
-    .maxAnisotropy = 1,
-    .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-    .unnormalizedCoordinates = VK_FALSE,
-    .compareEnable = VK_FALSE,
-    .compareOp = VK_COMPARE_OP_ALWAYS,
-    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-    .mipLodBias = 0.0f,
-    .minLod = 0.0f,
-    .maxLod = 0.0f
-  };
-  VkResult res = vkCreateSampler(state.device, &sampler_info,
-      nullptr, &state.texture_sampler);
-  assert(res == VK_SUCCESS);
-}
-
 void setup_depth_resources(AppState& state) {
   VkFormat depth_format = find_depth_format(state.phys_device);
 
@@ -1090,7 +1078,115 @@ void setup_depth_resources(AppState& state) {
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 }
 
-void setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
+const uint32_t MAX_NUM_VERTICES = (int) 1e6;
+
+void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
+  BufferState& buf_state = state.buffer_states[buf_index];
+
+  VkDeviceSize buffer_size = sizeof(vec4) * MAX_NUM_VERTICES;
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    create_buffer(state.device, state.phys_device,
+        buffer_size,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+          VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        buf_state.vert_buffers[i], buf_state.vert_buffer_mems[i]);
+
+    auto buffer_view_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+      .buffer = buf_state.vert_buffers[i],
+      .format = VK_FORMAT_R32G32B32_SFLOAT,
+      .offset = 0,
+      .range = VK_WHOLE_SIZE
+    };
+    VkResult res = vkCreateBufferView(state.device,
+        &buffer_view_info, nullptr, &buf_state.vert_buffer_views[i]);
+    assert(res == VK_SUCCESS);
+  }
+}
+
+void setup_buffer_state_render_desc_sets(AppState& state, int buf_index) {
+  BufferState& buf_state = state.buffer_states[buf_index];
+
+  VkDescriptorSetAllocateInfo render_desc_set_alloc_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    .descriptorPool = state.desc_pool,
+    .descriptorSetCount = 1,
+    .pSetLayouts = &state.render_desc_set_layout
+  };
+  VkResult res = vkAllocateDescriptorSets(state.device,
+      &render_desc_set_alloc_info, &state.render_desc_set);
+  assert(res == VK_SUCCESS);
+
+  vector<VkWriteDescriptorSet> writes;
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    VkWriteDescriptorSet write = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = buf_state.render_desc_set,
+      .dstBinding = i,
+      .dstArrayElement = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+      .descriptorCount = 1,
+      .pTexelBufferView = buf_state.vert_buffer_views[i],
+    };
+    writes.push_back(write);
+  }
+  vkUpdateDescriptorSets(state.device, (uint32_t) writes.size(),
+      writes.data(), 0, nullptr);
+}
+
+void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
+  BufferState& buf_state = state.buffer_states[buf_index];
+  BufferState& other_buf_state = state.buffer_states[(buf_index + 1) % 2];
+  
+  VkDescriptorSetAllocateInfo alloc_info = {
+    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    .descriptorPool = state.desc_pool,
+    .descriptorSetCount = 1,
+    .pSetLayouts = &state.compute_desc_set_layout
+  };
+  VkResult res = vkAllocateDescriptorSets(state.device,
+      &alloc_info, &state.compute_desc_set);
+  assert(res == VK_SUCCESS);
+ 
+  vector<VkWriteDescriptorSet> writes;
+  for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
+    VkBufferView buf_view = i < ATTRIBUTES_COUNT ?
+      buf_state.vert_buffer_views[i] :
+      other_buf.vert_buffer_views[i % ATTRIBUTES_COUNT];
+    
+    VkWriteDescriptorSet write = {
+      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+      .dstSet = buf_state.compute_desc_set,
+      .dstBinding = i,
+      .dstArrayElement = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+      .descriptorCount = 1,
+      .pTexelBufferView = buf_view,
+    };
+    writes.push_back(write);
+  }
+  vkUpdateDescriptorSets(state.device, (uint32_t) writes.size(),
+      writes.data(), 0, nullptr);
+}
+
+void setup_buffer_state_desc_sets(AppState& state, int buf_index) {
+  setup_buffer_state_render_desc_sets(state, buf_index);
+  setup_buffer_state_compute_desc_sets(state, buf_index);
+}
+
+void setup_buffer_states(AppState& state) {
+  for (int i = 0; i < state.buffer_states.size(); ++i) {
+    setup_buffer_state_vert_buffers(state, i); 
+  }
+  for (int i = 0; i < state.buffer_states.size(); ++i) {
+    setup_buffer_state_desc_sets(state, i);
+  }
+}
+
+// TODO - remove
+void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
   VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
 
   VkBuffer staging_buffer;
@@ -1128,19 +1224,6 @@ void setup_index_buffer(AppState& state, vector<uint16_t>& indices) {
       indices, state.index_buffer, state.index_buffer_mem);
 }
 
-void setup_uniform_buffers(AppState& state) {
-  state.unif_buffers.resize(state.swapchain_img_views.size());
-  state.unif_buffers_mem.resize(state.swapchain_img_views.size());
-  VkDeviceSize unif_buffer_size = sizeof(UniformBufferObject);
-  for (size_t i = 0; i < state.unif_buffers.size(); ++i) {
-    create_buffer(state.device, state.phys_device, unif_buffer_size,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        state.unif_buffers[i], state.unif_buffers_mem[i]);
-  }
-}
-
 void setup_descriptor_pool(AppState& state) {
   uint32_t size = 1000;
   vector<VkDescriptorPoolSize> pool_sizes;
@@ -1158,59 +1241,6 @@ void setup_descriptor_pool(AppState& state) {
   VkResult res = vkCreateDescriptorPool(state.device, &desc_pool_info,
       nullptr, &state.desc_pool);
   assert(res == VK_SUCCESS);
-}
-
-void setup_descriptor_sets(AppState& state) {
-  // create one descriptor set for each index of the swapchain
-  vector<VkDescriptorSetLayout> desc_set_layouts(
-      state.swapchain_img_views.size(), state.desc_set_layout);
-  VkDescriptorSetAllocateInfo desc_set_alloc_info = {
-    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-    .descriptorPool = state.desc_pool,
-    .descriptorSetCount = (uint32_t) desc_set_layouts.size(),
-    .pSetLayouts = desc_set_layouts.data()
-  };
-  state.desc_sets.resize(desc_set_layouts.size());
-  VkResult res = vkAllocateDescriptorSets(state.device,
-      &desc_set_alloc_info, state.desc_sets.data());
-  assert(res == VK_SUCCESS);
-  
-  // for each descriptor set, set the resources for each of its bindings
-  for (size_t i = 0; i < state.desc_sets.size(); ++i) {
-    VkDescriptorBufferInfo ubo_buffer_info = {
-      .buffer = state.unif_buffers[i],
-      .offset = 0,
-      .range = sizeof(UniformBufferObject)
-    };
-    VkDescriptorImageInfo image_info = {
-      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-      .imageView = state.texture_img_view,
-      .sampler = state.texture_sampler
-    };
-    vector<VkWriteDescriptorSet> desc_writes(2);
-    desc_writes[0] = {
-      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = state.desc_sets[i],
-      .dstBinding = 0,
-      .dstArrayElement = 0,
-      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-      .descriptorCount = 1,
-      .pBufferInfo = &ubo_buffer_info,
-      .pImageInfo = nullptr,
-      .pTexelBufferView = nullptr
-    };
-    desc_writes[1] = {
-      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = state.desc_sets[i],
-      .dstBinding = 1,
-      .dstArrayElement = 0,
-      .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-      .descriptorCount = 1,
-      .pImageInfo = &image_info
-    };
-    vkUpdateDescriptorSets(state.device, (uint32_t) desc_writes.size(),
-        desc_writes.data(), 0, nullptr);
-  }
 }
 
 void setup_command_buffers(AppState& state) {
@@ -1257,6 +1287,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
     .clearValueCount = (uint32_t) clear_values.size(),
     .pClearValues = clear_values.data()
   };
+  // TODO - bind the correct vert buffers
   vector<VkBuffer> vert_buffers = {state.vert_buffer};
   vector<VkDeviceSize> byte_offsets = {0};
 
@@ -1326,6 +1357,8 @@ void setup_sync_objects(AppState& state) {
   }
 }
 
+// TODO - cleanup all the new stuff
+
 void cleanup_swapchain(AppState& state) {
   vkDestroyImageView(state.device, state.depth_img_view, nullptr);
   vkDestroyImage(state.device, state.depth_img, nullptr);
@@ -1348,10 +1381,7 @@ void cleanup_swapchain(AppState& state) {
   // https://github.com/KhronosGroup/MoltenVK/issues/584
   // Validation layer will complain for now
   //vkDestroySwapchainKHR(state.device, state.swapchain, nullptr);
-  for (size_t i = 0; i < state.swapchain_img_views.size(); ++i) {
-    vkDestroyBuffer(state.device, state.unif_buffers[i], nullptr);
-    vkFreeMemory(state.device, state.unif_buffers_mem[i], nullptr);
-  }
+
   vkFreeDescriptorSets(state.device, state.desc_pool,
       (uint32_t) state.desc_sets.size(), state.desc_sets.data());
 }
@@ -1361,11 +1391,6 @@ void cleanup_vulkan(AppState& state) {
 
   vkDestroyDescriptorPool(state.device, state.desc_pool, nullptr);
   
-  vkDestroySampler(state.device, state.texture_sampler, nullptr);
-  vkDestroyImageView(state.device, state.texture_img_view, nullptr);
-  vkDestroyImage(state.device, state.texture_img, nullptr);
-  vkFreeMemory(state.device, state.texture_img_mem, nullptr);
-
   vkDestroyDescriptorSetLayout(state.device, state.desc_set_layout, nullptr);
 
   vkDestroyBuffer(state.device, state.index_buffer, nullptr);
@@ -1412,6 +1437,8 @@ void recreate_swapchain(AppState& state) {
   vkDeviceWaitIdle(state.device);
   cleanup_swapchain(state);
 
+  // TODO - revise these for the new setup
+
   // TODO - figure out why these in particular must be
   // called again. Not sure why some (like uniform buffers)
   // must be recreated?
@@ -1420,8 +1447,6 @@ void recreate_swapchain(AppState& state) {
   setup_graphics_pipeline(state);
   setup_depth_resources(state);
   setup_framebuffers(state);
-  setup_uniform_buffers(state);
-  setup_descriptor_sets(state);
   setup_command_buffers(state);
   ImGui_ImplVulkan_SetMinImageCount(state.surface_caps.minImageCount);
 }
@@ -1454,20 +1479,19 @@ void init_vulkan(AppState& state) {
   setup_physical_device(state);
   setup_logical_device(state);
   setup_swapchain(state);
-  setup_renderpass(state);
-  setup_descriptor_set_layout(state);
-  setup_graphics_pipeline(state);
   setup_command_pool(state);
-  setup_texture_image(state);
-  setup_texture_image_view(state);
-  setup_texture_sampler(state);
   setup_depth_resources(state);
   setup_framebuffers(state);
-  setup_vertex_buffer(state, vertices);
   setup_index_buffer(state, state.indices);
-  setup_uniform_buffers(state);
+
+  setup_renderpass(state);
+  setup_graphics_pipeline(state);
+  setup_compute_pipeline(state);
+
+  setup_desc_set_layouts(state);
   setup_descriptor_pool(state);
-  setup_descriptor_sets(state);
+  setup_buffer_states(state);
+
   setup_command_buffers(state);
   setup_sync_objects(state);
 }
@@ -1502,14 +1526,7 @@ void render_frame(AppState& state) {
     .view = view_mat,
     .proj = proj_mat
   }; 
-
-  // update uniform buffer
-  void* unif_data;
-  vkMapMemory(state.device, state.unif_buffers_mem[img_index], 0,
-      sizeof(UniformBufferObject), 0, &unif_data);
-  memcpy(unif_data, &ubo, sizeof(UniformBufferObject));
-  vkUnmapMemory(state.device, state.unif_buffers_mem[img_index]);
-  
+    
   record_render_pass(state, img_index, state.indices);
 
   // submit cmd buffer to pipeline

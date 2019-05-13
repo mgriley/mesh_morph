@@ -29,7 +29,29 @@ struct UniformBufferObject {
   mat4 proj;
 };
 
+enum Attributes {
+  ATTR_POS = 0,
+  ATTRI_VEL,
+  ATTR_NEIGHBORS,
+  ATTRI_DATA,
+
+  ATTRIBUTES_COUNT
+};
+
+// A single buffer in the double-buffered simulation
+struct BufferState {
+  array<VkBuffer, ATTRIBUTES_COUNT> vert_buffers;
+  array<VkDeviceMemory, ATTRIBUTES_COUNT> vert_buffer_mems;
+  array<VkBufferView, ATTRIBUTES_COUNT> vert_buffer_views;
+
+  VkDescriptorSet render_desc_set;
+  VkDescriptorSet compute_desc_set;
+
+  BufferState();
+};
+
 struct AppState {
+  array<BufferState, 2> buffer_states;
   vector<UserUnif> render_unifs;
   vector<UserUnif> compute_unifs;
 
@@ -39,10 +61,7 @@ struct AppState {
   vector<uint16_t> indices;
 
   PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils;
-
-  VkVertexInputBindingDescription binding_desc;
-  array<VkVertexInputAttributeDescription, 3> attr_descs;
-
+  
   VkInstance inst;
   VkDebugUtilsMessengerEXT debug_messenger;
   VkSurfaceKHR surface;
@@ -61,21 +80,24 @@ struct AppState {
   vector<VkImage> swapchain_images;
   vector<VkImageView> swapchain_img_views;
 
+  vector<VkVertexInputBindingDescription> vert_binding_descs;
+  vector<VkVertexInputAttributeDescription> vert_attr_descs;
+
   VkDescriptorPool desc_pool;
-  VkDescriptorSetLayout desc_set_layout;
-  vector<VkDescriptorSet> desc_sets;
+  VkDescriptorSetLayout render_desc_set_layout;
+  VkDescriptorSetLayout compute_desc_set_layout;
 
   VkRenderPass render_pass;
   VkPipelineLayout render_pipeline_layout;
   VkPipeline graphics_pipeline;
+
+  VkPipelineLayout compute_pipeline_layout;
+  VkPipeline compute_pipeline;
+
   vector<VkFramebuffer> swapchain_framebuffers;
 
-  VkBuffer vert_buffer;
-  VkDeviceMemory vert_buffer_mem;
   VkBuffer index_buffer;
   VkDeviceMemory index_buffer_mem;
-  vector<VkBuffer> unif_buffers;
-  vector<VkDeviceMemory> unif_buffers_mem;
 
   VkCommandPool cmd_pool;
   vector<VkCommandBuffer> cmd_buffers;
@@ -83,11 +105,6 @@ struct AppState {
   vector<VkSemaphore> img_available_semas;
   vector<VkSemaphore> render_done_semas;
   vector<VkFence> in_flight_fences;
-
-  VkImage texture_img;
-  VkDeviceMemory texture_img_mem;
-  VkImageView texture_img_view;
-  VkSampler texture_sampler;
 
   VkImage depth_img;
   VkDeviceMemory depth_img_mem;

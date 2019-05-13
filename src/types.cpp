@@ -12,6 +12,10 @@ UserUnif::UserUnif(string name, int num_comps, vec4 default_val,
 {
 }
 
+BufferState::BufferState()
+{
+}
+
 AppState::AppState()
 {
 }
