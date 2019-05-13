@@ -2,11 +2,45 @@
 
 #include "utils.h"
 
+const int MAX_NUM_USER_UNIFS = 100;
 
-struct Vertex {
-  vec3 pos;
-  vec3 color;
-  vec2 tex_coord;
+struct Camera {
+  mat4 cam_to_world = mat4(1.0);
+
+  Camera();
+  void set_view(vec3 eye, vec3 target);
+  vec3 pos() const;
+  vec3 right() const;
+  vec3 up() const;
+  vec3 forward() const;
+};
+
+// User controls 
+struct Controls {
+  int target_fps = 30;
+
+  // rendering
+  bool render_faces = false;
+  bool render_points = true;
+  bool render_wireframe = true;
+
+  // simulation
+  bool log_input_nodes = false;
+  bool log_output_nodes = false;
+  bool log_render_data = false;
+  bool log_durations = false;
+  int num_zygote_samples = 100;
+  // for the simulation/animation pane
+  int num_iters = 0;
+  bool animating_sim = true;
+  bool loop_at_end = false;
+  int start_iter_num = 0;
+  int end_iter_num = 10*1000*1000;
+  int delta_iters = 0;
+
+  bool cam_spherical_mode = true;
+
+  Controls();
 };
 
 struct UserUnif {
@@ -23,20 +57,56 @@ struct UserUnif {
       float drag_speed);
 };
 
-struct UniformBufferObject {
+struct RenderPushConstants {
   mat4 model;
   mat4 view;
   mat4 proj;
+
+  array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
+
+  RenderPushConstants(mat4 model, mat4 view, mat4 view,
+      const vector<UserUnif>& user_unifs);
+};
+
+struct ComputePushConstants {
+
+  array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
+
+  ComputePushConstants();
 };
 
 enum Attributes {
-  ATTR_POS = 0,
-  ATTRI_VEL,
-  ATTR_NEIGHBORS,
-  ATTRI_DATA,
+  ATTRIB_POS = 0,
+  ATTRIB_VEL,
+  ATTRIB_NEIGHBORS,
+  ATTRIB_DATA,
 
   ATTRIBUTES_COUNT
 };
+
+struct MorphNode {
+  vec4 pos = vec4(0.0);
+  vec4 vel = vec4(0.0);
+  // in order of: {right, upper, left, lower} wrt surface normal
+  vec4 neighbors = vec4(0.0);
+  vec4 data = vec4(0.0);
+
+  MorphNode();
+  MorphNode(vec4 pos, vec4 vel, vec4 neighbors, vec4 data);
+};
+
+struct MorphNodes {
+  vector<vec4> pos_vec;
+  vector<vec4> vel_vec;
+  vector<vec4> neighbors_vec;
+  vector<vec4> data_vec;
+
+  MorphNodes(size_t num_nodes);
+  MorphNodes(vector<MorphNode> const& nodes);
+  MorphNode node_at(size_t i) const;
+};
+
+string raw_node_str(MorphNode const& node);
 
 // A single buffer in the double-buffered simulation
 struct BufferState {
@@ -52,6 +122,9 @@ struct BufferState {
 
 struct AppState {
   array<BufferState, 2> buffer_states;
+  int result_buffer = 0;
+  uint32_t node_count = 0;
+
   vector<UserUnif> render_unifs;
   vector<UserUnif> compute_unifs;
 

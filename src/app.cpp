@@ -38,23 +38,22 @@ vector<char> read_file(const string& filename) {
 vector<UserUnif> parse_user_unifs(const string& shader_text) {
   vector<UserUnif> unifs;
 
-  string block_start = "layout(push_constant) uniform UserUnifs {";
-  string block_end = "} uu;";
+  string block_start = "// BEGIN_USER_UNIFS";
+  string block_end = "// END_USER_UNIFS";
 
   const char* s = shader_text.c_str();
   bool in_block = false;
   while (true) {
     if (!in_block) {
-      // read to the start block
+      // until the start block is reached, progress a line at a time
+      if (strncmp(s, block_start.c_str(), block_start.size()) == 0) {
+        in_block = true;
+      }
       s = strchr(s, '\n');
       if (!s) {
         break;
       }
       s += 1;
-      if (strncmp(s, block_start.c_str(), block_start.size()) == 0) {
-        s = strchr(s, '\n') + 1;
-        in_block = true;
-      }
     } else {
       // until the end block is reached, read one comment line of specification followed
       // by one line with the vec4 itself
@@ -82,7 +81,7 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
       UserUnif unif(name, num_comps, def_val,
           min_val, max_val, drag_speed);
       unifs.push_back(unif);
-    }
+    } 
   }
   return unifs;
 }
@@ -761,7 +760,9 @@ void setup_graphics_pipeline(AppState& state) {
   };
   VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-    .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    // TODO - make a pipeline for each variation
+    //.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    .topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
     .primitiveRestartEnable = VK_FALSE
   };
   VkViewport viewport = {
@@ -828,7 +829,7 @@ void setup_graphics_pipeline(AppState& state) {
   VkPushConstantRange push_constant_range = {
     .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
     .offset = 0,
-    .size = (uint32_t) (sizeof(vec4) * state.render_unifs.size())
+    .size = (uint32_t) sizeof(RenderPushConstants)
   };
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -883,7 +884,7 @@ void setup_compute_pipeline(AppState& state) {
   VkPushConstantRange push_constant_range = {
     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
     .offset = 0,
-    .size = (uint32_t) (sizeof(vec4) * state.compute_unifs.size())
+    .size = (uint32_t) sizeof(ComputePushConstants)
   };
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -1088,6 +1089,7 @@ void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
     create_buffer(state.device, state.phys_device,
         buffer_size,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
           VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -1256,6 +1258,86 @@ void setup_command_buffers(AppState& state) {
   assert(res == VK_SUCCESS);
 }
 
+struct StagingBuf {
+  VkBuffer buf;
+  VkDeviceMemory mem;
+
+  StagingBuf(AppState& state);
+  void cleanup(AppState& state);
+};
+
+StagingBuf::StagingBuf(AppState& state, uint32_t buffer_size)
+{
+  create_buffer(state.device, state.phys_device, buffer_size,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      buf, mem);
+}
+
+void StagingBuf::cleanup(AppState& state) {
+  vkDestroyBuffer(state.device, buf, nullptr);
+  vkFreeMemory(state.device, mem, nullptr);
+}
+
+void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
+  VkDeviceSize buffer_size = sizeof(vec4) * node_vecs.pos_vec.size()
+
+  StagingBuf staging(state, buffer_size);
+  
+  // Always write to the first buffer
+  BufferState& buf_state = state.buffer_states[0];
+
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    void* data;
+    vkMapMemory(state.device, staging.mem,
+        0, buffer_size, 0, &data);
+    memcpy(data, node_vecs[i].data(), (size_t) buffer_size);
+    vkUnmapMemory(state.device, staging.mem);
+    copy_buffer(state,
+        staging.buf, buf_state.vert_buffers[i], buffer_size);
+  }
+
+  staging.cleanup(state);
+}
+
+MorphNodes read_nodes_from_buffers(AppState& state,
+    MorphNodes& node_vecs) {
+  BufferState& buf_state = state.buffer_states[state.result_buffer];
+  MorphNodes node_vecs(state.node_count);
+  VkDeviceSize buffer_size = sizeof(vec4) * state.node_count;
+
+  StagingBuf staging(state, buffer_size);
+
+  vector<void*> copy_dsts = {
+    node_vecs.pos_vec.data(), node_vecs.vel_vec.data(),
+    node_vecs.neighbors_vec.data(), node_vecs.data_vec.data()
+  };
+  for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+    copy_buffer(state, buf_state.vert_buffers[i],
+        staging.buf, buffer_size);
+    void* data;
+    vkMapMemory(state.device, staging.mem,
+        0, buffer_size, 0, &data);
+    memcpy(copy_dsts[i], data, (size_t) buffer_size);
+    vkUnmapMemory(state.device, staging.mem);
+  }
+
+  staging.cleanup(state);
+
+  return node_vecs;
+}
+
+void log_nodes(MorphNodes& node_vecs) {
+  printf("%lu nodes:\n", node_vecs.pos_vec.size()); 
+  for (int i = 0; i < node_vecs.pos_vec.size(); ++i) {
+    MorphNode node = node_vecs.node_at(i);
+    printf("%4d %s\n", i, raw_node_str(node).c_str());
+  }
+  printf("\n\n");
+}
+
 void record_render_pass(AppState& state, uint32_t buffer_index,
     vector<uint16_t>& indices) {
   uint32_t i = buffer_index;
@@ -1287,37 +1369,43 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
     .clearValueCount = (uint32_t) clear_values.size(),
     .pClearValues = clear_values.data()
   };
-  // TODO - bind the correct vert buffers
-  vector<VkBuffer> vert_buffers = {state.vert_buffer};
-  vector<VkDeviceSize> byte_offsets = {0};
+
+  BufferState& buf_state = state.buffer_states[state.result_buffer];
+  auto& vert_buffers = buf_state.vert_buffers;
+  vector<VkDeviceSize> byte_offsets(vert_buffers.size(), 0);
+
+  // update push constants
+  mat4 model_mat = mat4(1.0f);
+  mat4 view_mat = glm::lookAt(vec3(2.0f), vec3(0.0f),
+      vec3(0.0f, 1.0f, 0.0f));
+  float aspect_ratio = state.target_extent.width / (float) state.target_extent.height;
+  mat4 proj_mat = glm::perspective(45.0f, aspect_ratio, 0.1f, 10.0f);
+  // invert Y b/c vulkan's y-axis is inverted wrt OpenGL
+	proj_mat[1][1] *= -1;
+  RenderPushConstants push_consts(model_mat, view_mat, proj_mat,
+      state.render_unifs);
 
   vkCmdBeginRenderPass(state.cmd_buffers[i], &render_pass_info,
       VK_SUBPASS_CONTENTS_INLINE);
-
   vkCmdBindPipeline(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
       state.graphics_pipeline);
   vkCmdBindVertexBuffers(state.cmd_buffers[i], 0, vert_buffers.size(),
       vert_buffers.data(), byte_offsets.data());
   vkCmdBindIndexBuffer(state.cmd_buffers[i], state.index_buffer, 0,
       VK_INDEX_TYPE_UINT16);
-  // the desc sets specify the link between the binding points and actual
-  // resources
-  vkCmdBindDescriptorSets(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-      state.render_pipeline_layout, 0, 1, &state.desc_sets[i], 0, nullptr);
-
-  // update push constants
-  vector<vec4> uu_values;
-  for (UserUnif& uu : state.render_unifs) {
-    uu_values.push_back(uu.current_val);
-  }
+  vkCmdBindDescriptorSets(state.cmd_buffers[i],
+      VK_PIPELINE_BIND_POINT_GRAPHICS,
+      state.render_pipeline_layout, 0, 1,
+      &buf_state.render_desc_set, 0, nullptr);
   vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
       VK_SHADER_STAGE_VERTEX_BIT, 0,
-      sizeof(uu_values[0]) * uu_values.size(),
-      uu_values.data());
-
-  //vkCmdDraw(cmd_buffers[i], (uint32_t) vertices.size(), 1, 0, 0);
+      sizeof(RenderPushConstants), &push_consts);
+  vkCmdDraw(cmd_buffers[i], state.node_count, 1, 0, 0);
+  // TODO - use indexed later
+  /*
   vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
       1, 0, 0, 0);
+  */
 
   ImGui_ImplVulkan_RenderDrawData(
       ImGui::GetDrawData(), state.cmd_buffers[i]);
@@ -1325,12 +1413,6 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   vkCmdEndRenderPass(state.cmd_buffers[i]);
   res = vkEndCommandBuffer(state.cmd_buffers[i]);
   assert(res == VK_SUCCESS);
-}
-
-void record_render_passes(AppState& state, vector<uint16_t>& indices) {
-  for (uint32_t i = 0; i < state.cmd_buffers.size(); ++i) {
-    record_render_pass(state, i, indices);
-  }
 }
 
 void setup_sync_objects(AppState& state) {
@@ -1503,7 +1585,7 @@ void render_frame(AppState& state) {
         VK_TRUE, std::numeric_limits<uint64_t>::max());
   
   uint32_t img_index;
-  VkResult res= vkAcquireNextImageKHR(state.device, state.swapchain,
+  VkResult res = vkAcquireNextImageKHR(state.device, state.swapchain,
       std::numeric_limits<uint64_t>::max(),
       state.img_available_semas[current_frame],
       VK_NULL_HANDLE, &img_index);
@@ -1511,21 +1593,7 @@ void render_frame(AppState& state) {
     state.framebuffer_resized = false;
     recreate_swapchain(state);
     return;
-  }
-  
-  // update the unif buffers
-  mat4 model_mat = mat4(1.0f);
-  mat4 view_mat = glm::lookAt(vec3(2.0f), vec3(0.0f),
-      vec3(0.0f, 1.0f, 0.0f));
-  float aspect_ratio = state.target_extent.width / (float) state.target_extent.height;
-  mat4 proj_mat = glm::perspective(45.0f, aspect_ratio, 0.1f, 10.0f);
-  // invert Y b/c vulkan's y-axis is inverted wrt OpenGL
-	proj_mat[1][1] *= -1;
-  UniformBufferObject ubo = {
-    .model = model_mat,
-    .view = view_mat,
-    .proj = proj_mat
-  }; 
+  } 
     
   record_render_pass(state, img_index, state.indices);
 
@@ -1566,6 +1634,11 @@ void render_frame(AppState& state) {
   state.current_frame = (current_frame + 1) % max_frames_in_flight;
 }
 
+void run_simulation(AppState& state) {
+  // TODO
+  printf("TODO - run_simulation\n");
+}
+
 void framebuffer_resize_callback(GLFWwindow* win,
     int w, int h) {
   AppState* state = reinterpret_cast<AppState*>(
@@ -1591,11 +1664,10 @@ void handle_key_event(GLFWwindow* win, int key, int scancode,
     printf("reloading program\n");
 		recreate_graphics_pipeline(*state);
   }
-	/*
+  // TODO
   if (key == GLFW_KEY_C && action == GLFW_PRESS) {
-    run_simulation_pipeline(*g_state);  
+    run_simulation_pipeline(*state);  
   }
-	*/
 }
 
 void init_glfw(AppState& state) {
