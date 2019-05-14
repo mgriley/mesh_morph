@@ -20,7 +20,7 @@
 #include <cstring>
 
 const uint32_t MAX_NUM_VERTICES = (int) 1e6;
-const uint32_t INDEX_BUFFER_SIZE = (int) 1e6;
+const uint32_t MAX_NUM_INDICES = (int) 1e6;
 
 const int max_frames_in_flight = 2;
 
@@ -271,32 +271,6 @@ StagingBuf::StagingBuf(AppState& state, uint32_t buffer_size)
 void StagingBuf::cleanup(AppState& state) {
   vkDestroyBuffer(state.device, buf, nullptr);
   vkFreeMemory(state.device, mem, nullptr);
-}
-
-// TODO - remove
-void old_create_index_buffer(
-    AppState& state,
-    vector<uint16_t>& indices,
-    VkBuffer& index_buffer, VkDeviceMemory& index_buffer_mem) {
-
-  VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
-  StagingBuf staging(state, buffer_size);
-
-  void* data;
-  vkMapMemory(state.device, staging.mem, 0, buffer_size, 0, &data);
-  memcpy(data, indices.data(), (size_t) buffer_size);
-  vkUnmapMemory(state.device, staging.mem);
-
-  create_buffer(state.device, state.phys_device, buffer_size,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        index_buffer, index_buffer_mem);
-
-  copy_buffer(state,
-      staging.buf, index_buffer, buffer_size);
-
-  staging.cleanup(state);
 }
 
 VkFormat find_supported_format(VkPhysicalDevice& phys_device,
@@ -1251,7 +1225,8 @@ void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
 */
 
 void setup_index_buffer(AppState& state) {
-  create_buffer(state.device, state.phys_device, INDEX_BUFFER_SIZE,
+  create_buffer(state.device, state.phys_device,
+      sizeof(uint16_t) * MAX_NUM_INDICES,
       VK_BUFFER_USAGE_TRANSFER_DST_BIT |
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -1292,8 +1267,11 @@ void setup_command_buffers(AppState& state) {
 }
 
 void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
-  VkDeviceSize buffer_size = sizeof(vec4) * node_vecs.pos_vec.size();
+  uint32_t node_count = node_vecs.pos_vec.size();
+  assert(node_count < MAX_NUM_VERTICES);
+  state.node_count = node_count;
 
+  VkDeviceSize buffer_size = sizeof(vec4) * node_count;
   StagingBuf staging(state, buffer_size);
   
   // Always write to the first buffer
@@ -1334,6 +1312,22 @@ MorphNodes read_nodes_from_buffers(AppState& state) {
   staging.cleanup(state);
 
   return node_vecs;
+}
+
+void write_indices_to_buffer(AppState& state, vector<uint16_t>& indices) {
+  assert(indices.size() < MAX_NUM_INDICES);
+  state.index_count = indices.size();
+
+  VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+  StagingBuf staging(state, buffer_size);
+
+  void* data;
+  vkMapMemory(state.device, staging.mem, 0, buffer_size, 0, &data);
+  memcpy(data, indices.data(), (size_t) buffer_size);
+  vkUnmapMemory(state.device, staging.mem);
+  copy_buffer(state, staging.buf, state.index_buffer, buffer_size);
+
+  staging.cleanup(state);
 }
 
 void log_nodes(MorphNodes& node_vecs) {
@@ -1382,11 +1376,11 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   vector<VkDeviceSize> byte_offsets(vert_buffers.size(), 0);
 
   // update push constants
-  mat4 model_mat = mat4(1.0f);
-  mat4 view_mat = glm::lookAt(vec3(2.0f), vec3(0.0f),
-      vec3(0.0f, 1.0f, 0.0f));
+  Camera& cam = state.cam;
   float aspect_ratio = state.target_extent.width / (float) state.target_extent.height;
-  mat4 proj_mat = glm::perspective(45.0f, aspect_ratio, 0.1f, 10.0f);
+  mat4 model_mat = mat4(1.0f);
+  mat4 view_mat = glm::lookAt(cam.pos(), cam.pos() + cam.forward(), cam.up());
+  mat4 proj_mat = glm::perspective((float) M_PI / 4.0f, aspect_ratio, 0.1f, 10000.0f);
   // invert Y b/c vulkan's y-axis is inverted wrt OpenGL
 	proj_mat[1][1] *= -1;
   RenderPushConstants push_consts(model_mat, view_mat, proj_mat,
@@ -1413,7 +1407,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   }
   // TODO - use indexed later
   /*
-  vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
+  vkCmdDrawIndexed(state.cmd_buffers[i], state.index_count,
       1, 0, 0, 0);
   */
 
@@ -1448,8 +1442,6 @@ void setup_sync_objects(AppState& state) {
     assert(res == VK_SUCCESS);
   }
 }
-
-// TODO - cleanup all the new stuff
 
 void cleanup_swapchain(AppState& state) {
   vkDestroyImageView(state.device, state.depth_img_view, nullptr);
@@ -1541,11 +1533,6 @@ void recreate_swapchain(AppState& state) {
   vkDeviceWaitIdle(state.device);
   cleanup_swapchain(state);
 
-  // TODO - revise these for the new setup
-
-  // TODO - figure out why these in particular must be
-  // called again. Not sure why some (like uniform buffers)
-  // must be recreated?
   setup_swapchain(state);
   setup_renderpass(state);
   setup_graphics_pipeline(state);
@@ -1650,15 +1637,172 @@ void run_debug_test(AppState& state) {
   printf("\n");
 
   write_nodes_to_buffers(state, in_node_vecs);
-  state.node_count = nodes.size();
 
   MorphNodes out_node_vecs = read_nodes_from_buffers(state);
   printf("out nodes:\n");
   log_nodes(out_node_vecs);
 }
 
+vec3 gen_sphere(vec2 unit) {
+  float v_angle = unit[1] * M_PI;
+  float h_angle = unit[0] * 2.0 * M_PI;
+  return vec3(
+      sin(v_angle) * cos(h_angle),
+      sin(v_angle) * sin(h_angle),
+      cos(v_angle));
+}
+
+vec3 gen_square(vec2 unit) {
+  return vec3(unit, 0);
+}
+
+vec3 gen_plane(vec2 unit) {
+  vec2 plane_pos = 10.0f * (unit - 0.5f);
+  return vec3(plane_pos[0], 0.0f, plane_pos[1]);
+}
+
+// Helper for gen_morph_data
+// returns -1 if the coord is outside the plane
+int coord_to_index(ivec2 coord, ivec2 samples) {
+  if ((0 <= coord[0] && coord[0] < samples[0]) &&
+      (0 <= coord[1] && coord[1] < samples[1])) {
+    return coord[0] % samples[0] + samples[0] * (coord[1] % samples[1]);
+  } else {
+    return -1;
+  }
+}
+
+// Outputs the nodes and the triangle indices, for rendering
+void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes, vector<uint16_t>& out_indices) {
+  vector<MorphNode> vertex_nodes;
+  vector<uint16_t> indices;
+  vertex_nodes.reserve(samples[0] * samples[1]);
+  indices.reserve(6 * (samples[0] - 1) * (samples[1] - 1));
+  for (int y = 0; y < samples[1]; ++y) {
+    for (int x = 0; x < samples[0]; ++x) {
+      ivec2 coord(x, y);
+      vec3 pos = gen_plane(vec2(coord) / vec2(samples - 1));
+
+      int upper_neighbor = coord_to_index(coord + ivec2(0, 1), samples);
+      int lower_neighbor = coord_to_index(coord + ivec2(0, -1), samples);
+      int right_neighbor = coord_to_index(coord + ivec2(1, 0), samples);
+      int left_neighbor = coord_to_index(coord + ivec2(-1, 0), samples);
+      vec4 neighbors(
+          (float) right_neighbor, (float) upper_neighbor,
+          (float) left_neighbor, (float) lower_neighbor);
+
+      MorphNode vert_node(vec4(pos, 0.0), vec4(0.0), neighbors, vec4(0.0));
+      vertex_nodes.push_back(vert_node);
+
+      // if this is the lower-left vert of a valid face, add the indices for
+      // the two triangles that make up the quad
+      if (right_neighbor != -1 && upper_neighbor != -1) {
+        int my_index = coord_to_index(coord, samples);
+        int opposite_neighbor = coord_to_index(coord + ivec2(1, 1), samples);
+        assert(opposite_neighbor != -1);
+        vector<uint16_t> new_indices = {
+          (uint16_t) my_index, (uint16_t) right_neighbor, (uint16_t) opposite_neighbor,
+          (uint16_t) my_index, (uint16_t) opposite_neighbor, (uint16_t) upper_neighbor
+        };
+        indices.insert(indices.end(), new_indices.begin(), new_indices.end());
+      }
+    }
+  }
+  out_nodes = std::move(vertex_nodes);
+  out_indices = std::move(indices);
+}
+
+void set_initial_sim_data(AppState& state) {
+
+  ivec2 zygote_samples(state.controls.num_zygote_samples);
+  vector<MorphNode> nodes;
+  vector<uint16_t> indices;
+  gen_morph_data(zygote_samples, nodes, indices);
+  MorphNodes node_vecs(nodes);
+  write_indices_to_buffer(state, indices);
+
+  // debug logging
+  if (state.controls.log_render_data) {
+    printf("\n\nindex data (%lu):\n", indices.size());
+    for (int i = 0; i < indices.size(); i += 3) {
+      ivec3 face(indices[i], indices[i + 1], indices[i + 2]);
+      printf("%4d %s\n", i, to_string(face).c_str());
+    }
+  }
+  if (state.controls.log_input_nodes) {
+    printf("input nodes:\n");
+    log_nodes(node_vecs);
+  }
+
+  write_nodes_to_buffers(state, node_vecs);
+}
+
+// TODO - remove
+/*
+void run_simulation(GraphicsState& g_state, int num_iters) {
+  MorphState& m_state = g_state.morph_state;
+
+  MorphProgram& m_prog = m_state.programs[m_state.cur_prog_index];
+
+  glUseProgram(m_prog.gl_handle);
+  glValidateProgram(m_prog.gl_handle);
+  log_program_info_logs(m_prog.name + ", validate program log",
+      m_prog.gl_handle);
+
+  glEnable(GL_RASTERIZER_DISCARD);
+
+  // Set uniforms
+  for (UserUnif& user_unif : m_prog.user_unifs) {
+    glUniform4fv(user_unif.gl_handle, 1, &user_unif.cur_val[0]);
+  }
+  glUniform1i(m_prog.unif_num_nodes, m_state.num_nodes);
+
+  // perform double-buffered iterations
+  // assume the initial data is in buffer 0
+  for (int i = 0; i < num_iters; ++i) {
+    MorphBuffer& cur_buf = m_state.buffers[i & 1];
+    MorphBuffer& next_buf = m_state.buffers[(i + 1) & 1];
+
+    // set uniforms
+    glUniform1i(m_prog.unif_iter_num, i);
+
+    // setup texture buffers and transform feedback buffers
+    // TODO - is this necessary every iteration, or just once?
+    glBindVertexArray(cur_buf.vao);
+    for (int i = 0; i < MORPH_BUF_COUNT; ++i) {
+      glActiveTexture(GL_TEXTURE0 + i);
+      glBindTexture(GL_TEXTURE_BUFFER, cur_buf.tex_bufs[i]);
+
+      glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, next_buf.vbos[i]);
+    }
+
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, m_state.num_nodes);
+    glEndTransformFeedback();
+  }
+  // store the index of the most recently written buffer
+  m_state.result_buffer_index = num_iters % 2;
+
+  glDisable(GL_RASTERIZER_DISCARD);
+
+  log_gl_errors("done simulation");
+}
+*/
+
+
+void dispatch_simulation(AppState& state) {
+  printf("TODO dispatch simulation\n");
+}
+
 void run_simulation_pipeline(AppState& state) { 
-  printf("TODO - run_simulation\n");
+  set_initial_sim_data(state);
+  dispatch_simulation(state);
+
+  if (state.controls.log_output_nodes) {
+    MorphNodes node_vecs = read_nodes_from_buffers(state);
+    printf("output nodes:\n");
+    log_nodes(node_vecs);
+  }
 }
 
 void framebuffer_resize_callback(GLFWwindow* win,
@@ -1672,25 +1816,24 @@ void handle_key_event(GLFWwindow* win, int key, int scancode,
     int action, int mods) {
 	AppState* state = reinterpret_cast<AppState*>(
       glfwGetWindowUserPointer(win));
+  Controls& controls = state->controls;
 
-	/*
   if (key == GLFW_KEY_R && action == GLFW_PRESS) {
     // reset camera pos
-		g_state->camera = Camera();
+    state->cam = Camera();
   }
   if (key == GLFW_KEY_F && action == GLFW_PRESS) {
 		controls.cam_spherical_mode = !controls.cam_spherical_mode;
   }
-	*/
   if (key == GLFW_KEY_P && action == GLFW_PRESS) {
+    // TODO - also recreate the compute pipeline
     printf("reloading program\n");
 		recreate_graphics_pipeline(*state);
   }
-  // TODO
   if (key == GLFW_KEY_C && action == GLFW_PRESS) {
     run_simulation_pipeline(*state);  
   }
-  // TODO
+  // TODO - only for debugging
   if (key == GLFW_KEY_N && action == GLFW_PRESS) {
     run_debug_test(*state);
   }
@@ -1730,6 +1873,186 @@ void upload_imgui_fonts(AppState& state) {
   ImGui_ImplVulkan_DestroyFontUploadObjects();
 }
 
+void update_camera_cartesian(AppState& state) {
+  GLFWwindow* win = state.win;
+  Controls& controls = state.controls;
+  Camera& cam = state.cam;
+
+  vec3 delta(0.0);
+  if (glfwGetKey(win, GLFW_KEY_W)) {
+    delta += vec3(0.0,0.0,1.0);
+  }
+  if (glfwGetKey(win, GLFW_KEY_A)) {
+    delta += vec3(1.0,0.0,0.0);
+  }
+  if (glfwGetKey(win, GLFW_KEY_S)) {
+    delta += vec3(0.0,0.0,-1.0);
+  }
+  if (glfwGetKey(win, GLFW_KEY_D)) {
+    delta += vec3(-1.0,0.0,0.0);
+  }
+  if (glfwGetKey(win, GLFW_KEY_Q)) {
+    delta += vec3(0.0,-1.0,0.0);
+  }
+  if (glfwGetKey(win, GLFW_KEY_E)) {
+    delta += vec3(0.0,1.0,0.0);
+  }
+  float delta_secs = 1.0f / controls.target_fps;
+  vec3 trans = delta * 20.0f * delta_secs;
+  mat4 trans_mat = glm::translate(mat4(1.0), trans);
+
+  mat4 rot_mat(1.0);
+  float amt_degs = delta_secs * 5.0f;
+  if (glfwGetKey(win, GLFW_KEY_LEFT)) {
+    rot_mat = glm::rotate(mat4(1.0), amt_degs, vec3(0.0,1.0,0.0));
+  } else if (glfwGetKey(win, GLFW_KEY_RIGHT)) {
+    rot_mat = glm::rotate(mat4(1.0), -amt_degs, vec3(0.0,1.0,0.0));
+  } else if (glfwGetKey(win, GLFW_KEY_UP)) {
+    rot_mat = glm::rotate(mat4(1.0), amt_degs, vec3(1.0,0.0,0.0));
+  } else if (glfwGetKey(win, GLFW_KEY_DOWN)) {
+    rot_mat = glm::rotate(mat4(1.0), -amt_degs, vec3(1.0,0.0,0.0));
+  }
+  
+  cam.cam_to_world = cam.cam_to_world * rot_mat * trans_mat;
+}
+
+void update_camera_spherical(AppState& state) {
+  GLFWwindow* win = state.win;
+  Controls& controls = state.controls;
+  Camera& cam = state.cam;
+
+  vec3 eye = cam.pos();
+  float cur_r = length(eye);
+  float h_angle = atan2(eye.z, eye.x);
+  float v_angle = atan2(length(vec2(eye.x, eye.z)), eye.y);
+
+  float delta_r = 0.0;
+  float delta_h_angle = 0.0;
+  float delta_v_angle = 0.0;
+  if (glfwGetKey(win, GLFW_KEY_W)) {
+    delta_r = -1.0;
+  }
+  if (glfwGetKey(win, GLFW_KEY_A)) {
+    delta_h_angle = 1.0;
+  }
+  if (glfwGetKey(win, GLFW_KEY_S)) {
+    delta_r = 1.0;
+  }
+  if (glfwGetKey(win, GLFW_KEY_D)) {
+    delta_h_angle = -1.0;
+  }
+  if (glfwGetKey(win, GLFW_KEY_Q)) {
+    delta_v_angle = 1.0;
+  }
+  if (glfwGetKey(win, GLFW_KEY_E)) {
+    delta_v_angle = -1.0;
+  }
+  float delta_secs = 1.0f / controls.target_fps;
+  float new_r = cur_r + 30.0f * delta_r * delta_secs;
+  float new_h_angle = h_angle + M_PI / 2.0 * delta_h_angle * delta_secs;
+  float new_v_angle = v_angle + M_PI / 2.0 * delta_v_angle * delta_secs;
+
+  vec3 pos = new_r * vec3(
+      cos(new_h_angle) * sin(new_v_angle),
+      cos(new_v_angle),
+      sin(new_h_angle) * sin(new_v_angle)
+      );
+  cam.set_view(pos, vec3(0.0));
+}
+
+void update_camera(AppState& state) {
+  if (state.controls.cam_spherical_mode) {
+    update_camera_spherical(state);
+  } else {
+    update_camera_cartesian(state);
+  }
+}
+
+void create_ui(AppState& state) {
+  Controls& controls = state.controls;
+
+  ImGui::Begin("dev console", &controls.show_dev_console);
+
+  ImGui::Separator();
+  ImGui::Text("camera:");
+  ImGui::Text("eye: %s", vec3_str(state.cam.pos()).c_str());
+  ImGui::Text("forward: %s", vec3_str(state.cam.forward()).c_str());
+  ImGui::Text("mode: %s", controls.cam_spherical_mode ? "spherical" : "cartesian");
+
+  ImGui::Separator();
+  ImGui::Text("render controls:");
+  ImGui::Checkbox("render faces", &controls.render_faces);
+  ImGui::Checkbox("render points", &controls.render_points);
+  ImGui::Checkbox("render wireframe", &controls.render_wireframe);
+
+  ImGui::Separator();
+  ImGui::Text("render program controls:");
+  ImGui::PushID("render");
+  gen_user_uniforms_ui(state.render_unifs);
+  ImGui::PopID();
+
+  ImGui::Separator();
+  ImGui::Text("compute program controls:");
+  ImGui::PushID("compute");
+  gen_user_uniforms_ui(state.compute_unifs);
+  ImGui::PopID();
+
+  ImGui::Separator();
+  ImGui::Text("simulation controls:");
+  ImGui::Text("init data:");
+  ImGui::InputInt("AxA samples", &controls.num_zygote_samples);
+  controls.num_zygote_samples = clamp(
+      controls.num_zygote_samples, 2, 500);
+  
+  ImGui::Text("simulation:"); 
+  int max_iter_num = 1*1000*1000*1000;
+  ImGui::DragInt("iter num", &controls.num_iters, 0.2f, 0, max_iter_num);
+  if (ImGui::Button("run once")) {
+    run_simulation_pipeline(state);  
+  }
+  ImGui::Text("animation:");
+  string anim_btn_text(controls.animating_sim ? "PAUSE" : "PLAY");
+  if (ImGui::Button(anim_btn_text.c_str())) {
+    controls.animating_sim = !controls.animating_sim;
+  }
+  ImGui::DragInt("start iter", &controls.start_iter_num, 10.0f, 0, max_iter_num);
+  ImGui::DragInt("end iter", &controls.end_iter_num, 10.0f, controls.start_iter_num, max_iter_num);
+  ImGui::DragInt("delta iters per frame", &controls.delta_iters, 0.2f, -10, 10);
+  ImGui::Checkbox("loop at end", &controls.loop_at_end);
+  
+  // run the animation
+  if (controls.animating_sim) {
+    controls.num_iters += controls.delta_iters;
+    controls.num_iters = clamp(controls.num_iters,
+        controls.start_iter_num, controls.end_iter_num);
+    if (controls.loop_at_end && controls.num_iters == controls.end_iter_num) {
+      controls.num_iters = controls.start_iter_num;
+    }
+    run_simulation_pipeline(state);
+  }
+
+  ImGui::Separator();
+  ImGui::Text("debug");
+  ImGui::Text("Note that logging will not occur while animating");
+  ImGui::Checkbox("log input nodes", &controls.log_input_nodes);
+  ImGui::Checkbox("log output nodes", &controls.log_output_nodes);
+  ImGui::Checkbox("log render data", &controls.log_render_data);
+  ImGui::Checkbox("log durations", &controls.log_durations);
+  // do not log while animating, the IO becomes a bottleneck
+  if (controls.animating_sim) {
+    controls.log_input_nodes = false;
+    controls.log_output_nodes = false;
+    controls.log_render_data = false;
+    controls.log_durations = false;
+  }
+
+  ImGui::Separator();
+  ImGui::Text("instructions:");
+  ImGui::Text("%s", INSTRUCTIONS_STRING);
+
+  ImGui::End();
+}
+
 void main_loop(AppState& state) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -1752,19 +2075,17 @@ void main_loop(AppState& state) {
   ImGui_ImplVulkan_Init(&init_info, state.render_pass);
   upload_imgui_fonts(state);
 
-  bool show_dev_console = true;
   state.current_frame = 0;
   while (!glfwWindowShouldClose(state.win)) {
     glfwPollEvents();
+
+    update_camera(state);
 
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("dev console", &show_dev_console);
-    gen_user_uniforms_ui(state.render_unifs);
-    ImGui::End();
-
+    create_ui(state);
     ImGui::Render();
 
     render_frame(state);

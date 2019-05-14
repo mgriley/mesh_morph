@@ -17,8 +17,9 @@ struct Camera {
   vec3 forward() const;
 };
 
-// User controls 
+// TODO - not all of these are used anymore
 struct Controls {
+  bool show_dev_console = true;
   int target_fps = 30;
 
   // rendering
@@ -127,7 +128,13 @@ struct BufferState {
 struct AppState {
   array<BufferState, 2> buffer_states;
   int result_buffer = 0;
+  // number of vertices currently in the vertex buffers
   uint32_t node_count = 0;
+  // number of indices currently in the index buffer
+  uint32_t index_count = 0;
+
+  Camera cam;
+  Controls controls;
 
   vector<UserUnif> render_unifs;
   vector<UserUnif> compute_unifs;
@@ -135,6 +142,7 @@ struct AppState {
   GLFWwindow* win = nullptr;
   bool framebuffer_resized = false;
 
+  // TODO - required?
   vector<uint16_t> indices;
 
   PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils;

@@ -22,6 +22,7 @@
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 // Use 0.0 to 1.0 instead of -1.0 to 1.0 for the perspective proj matrix
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_RADIANS
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtx/string_cast.hpp"
@@ -36,4 +37,6 @@ void glfw_error_callback(int error, const char* description);
 string vec3_str(vec3 v);
 string vec4_str(vec4 v);
 string ivec4_str(ivec4 v);
+
+extern const char* INSTRUCTIONS_STRING;
 
