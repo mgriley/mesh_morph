@@ -16,6 +16,7 @@ layout(push_constant) uniform Unifs {
 // END_USER_UNIFS
 } unif;
 
+
 layout(location = 0) in vec4 in_pos;
 layout(location = 1) in vec4 in_vel;
 layout(location = 2) in vec4 in_neighbors;
@@ -23,7 +24,16 @@ layout(location = 3) in vec4 in_data;
 
 layout(location = 0) out vec3 frag_color;
 
+// TODO - are these bindings correct?
+/*
+layout(binding = 4) uniform imageBuffer buf_pos;
+layout(binding = 5) uniform imageBuffer buf_vel;
+layout(binding = 6) uniform imageBuffer buf_neighbors;
+layout(binding = 7) uniform imageBuffer buf_data;
+*/
+
 void main() {
+  gl_PointSize = 1.0f;
   gl_Position = unif.proj * unif.view * unif.model *
     vec4(in_pos.xyz, 1.0);
   frag_color = unif.col.rgb;

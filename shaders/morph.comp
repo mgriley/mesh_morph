@@ -1,0 +1,26 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(push_constant) uniform Unifs {
+
+// BEGIN_USER_UNIFS
+  // comps 3 min 0.0 max 1.0 speed 0.01 def 1.0 1.0 1.0
+  vec4 test;
+// END_USER_UNIFS
+} unif;
+
+/*
+layout(binding = 0) uniform imageBuffer in_pos;
+layout(binding = 1) uniform imageBuffer in_vel;
+layout(binding = 2) uniform imageBuffer in_neighbors;
+layout(binding = 3) uniform imageBuffer in_data;
+
+layout(binding = 4) uniform imageBuffer out_pos;
+layout(binding = 5) uniform imageBuffer out_vel;
+layout(binding = 6) uniform imageBuffer out_neighbors;
+layout(binding = 7) uniform imageBuffer out_data;
+*/
+
+void main() {
+  // TODO
+}

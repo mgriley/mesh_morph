@@ -19,6 +19,9 @@
 #include <fstream>
 #include <cstring>
 
+const uint32_t MAX_NUM_VERTICES = (int) 1e6;
+const uint32_t INDEX_BUFFER_SIZE = (int) 1e6;
+
 const int max_frames_in_flight = 2;
 
 static void check_vk_result(VkResult res) {
@@ -27,6 +30,10 @@ static void check_vk_result(VkResult res) {
 
 vector<char> read_file(const string& filename) {
   ifstream file(filename, ios::ate | ios::binary);
+  if (!file.is_open()) {
+    printf("Could not open: %s\n", filename.c_str());
+    throw std::runtime_error("file not found");
+  }
   size_t file_size = (size_t) file.tellg();
   vector<char> buffer(file_size);
   file.seekg(0);
@@ -133,7 +140,8 @@ VkShaderModule create_shader_module(VkDevice& device,
     .pCode = code.data()
   };
   VkShaderModule module;
-  VkResult res = vkCreateShaderModule(device, &create_info, nullptr, &module);
+  VkResult res = vkCreateShaderModule(device, &create_info,
+      nullptr, &module);
   assert(res == VK_SUCCESS);
   return module;
 }
@@ -240,24 +248,43 @@ void create_buffer(
   vkBindBufferMemory(device, buffer, buffer_mem, 0);
 }
 
-void create_index_buffer(
+// TODO - move all the vulkan helper stuff to a diff file
+struct StagingBuf {
+  VkBuffer buf;
+  VkDeviceMemory mem;
+
+  StagingBuf(AppState& state, uint32_t buffer_size);
+  void cleanup(AppState& state);
+};
+
+StagingBuf::StagingBuf(AppState& state, uint32_t buffer_size)
+{
+  create_buffer(state.device, state.phys_device, buffer_size,
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+      buf, mem);
+}
+
+void StagingBuf::cleanup(AppState& state) {
+  vkDestroyBuffer(state.device, buf, nullptr);
+  vkFreeMemory(state.device, mem, nullptr);
+}
+
+// TODO - remove
+void old_create_index_buffer(
     AppState& state,
     vector<uint16_t>& indices,
     VkBuffer& index_buffer, VkDeviceMemory& index_buffer_mem) {
-  VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
 
-  VkBuffer staging_buffer;
-  VkDeviceMemory staging_buffer_mem;
-  create_buffer(state.device, state.phys_device, buffer_size,
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      staging_buffer, staging_buffer_mem);
+  VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+  StagingBuf staging(state, buffer_size);
 
   void* data;
-  vkMapMemory(state.device, staging_buffer_mem, 0, buffer_size, 0, &data);
+  vkMapMemory(state.device, staging.mem, 0, buffer_size, 0, &data);
   memcpy(data, indices.data(), (size_t) buffer_size);
-  vkUnmapMemory(state.device, staging_buffer_mem);
+  vkUnmapMemory(state.device, staging.mem);
 
   create_buffer(state.device, state.phys_device, buffer_size,
       VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -266,10 +293,9 @@ void create_index_buffer(
         index_buffer, index_buffer_mem);
 
   copy_buffer(state,
-      staging_buffer, index_buffer, buffer_size);
+      staging.buf, index_buffer, buffer_size);
 
-  vkDestroyBuffer(state.device, staging_buffer, nullptr);
-  vkFreeMemory(state.device, staging_buffer_mem, nullptr);
+  staging.cleanup(state);
 }
 
 VkFormat find_supported_format(VkPhysicalDevice& phys_device,
@@ -673,7 +699,7 @@ void setup_renderpass(AppState& state) {
 void setup_render_desc_set_layout(AppState& state) {
   vector<VkDescriptorSetLayoutBinding> layout_bindings;
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
-    auto binding = {
+    VkDescriptorSetLayoutBinding binding = {
       .binding = i,
       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
       .descriptorCount = 1,
@@ -688,7 +714,7 @@ void setup_render_desc_set_layout(AppState& state) {
     .pBindings = layout_bindings.data()
   };
   VkResult res = vkCreateDescriptorSetLayout(state.device,
-      &layout_info, &state.render_desc_set_layout);
+      &layout_info, nullptr, &state.render_desc_set_layout);
   assert(res == VK_SUCCESS);
 }
 
@@ -699,7 +725,7 @@ void setup_compute_desc_set_layout(AppState& state) {
   // for each output attribute
   vector<VkDescriptorSetLayoutBinding> bindings;
   for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
-    auto binding = {
+    VkDescriptorSetLayoutBinding binding = {
       .binding = i,
       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
       .descriptorCount = 1,
@@ -710,11 +736,11 @@ void setup_compute_desc_set_layout(AppState& state) {
   }
   VkDescriptorSetLayoutCreateInfo layout_info = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-    .bindingCOunt = (uint32_t) bindings.size(),
+    .bindingCount = (uint32_t) bindings.size(),
     .pBindings = bindings.data()
   };
   VkResult res = vkCreateDescriptorSetLayout(state.device,
-      &layout_info, &state.compute_desc_set_layout);
+      &layout_info, nullptr, &state.compute_desc_set_layout);
   assert(res == VK_SUCCESS);
 }
 
@@ -838,7 +864,8 @@ void setup_graphics_pipeline(AppState& state) {
     .pushConstantRangeCount = 1,
     .pPushConstantRanges = &push_constant_range
   };
-  VkResult res = vkCreatePipelineLayout(state.device, &pipeline_layout_info, nullptr,
+  VkResult res = vkCreatePipelineLayout(state.device,
+      &pipeline_layout_info, nullptr,
       &state.render_pipeline_layout);
   assert(res == VK_SUCCESS);
 
@@ -870,7 +897,7 @@ void setup_graphics_pipeline(AppState& state) {
 
 void setup_compute_pipeline(AppState& state) {
   auto shader_code = process_shader_file(
-      "compute shader", "../shaders/morph.compute",
+      "compute shader", "../shaders/morph.comp",
       shaderc_glsl_compute_shader, state.compute_unifs);
   VkShaderModule shader_module = create_shader_module(
       state.device, shader_code);
@@ -893,12 +920,13 @@ void setup_compute_pipeline(AppState& state) {
     .pushConstantRangeCount = 1,
     .pPushConstantRanges = &push_constant_range
   };
-  VkResult res = vkCreatePipelineLayout(state.device, &pipeline_layout_info,
+  VkResult res = vkCreatePipelineLayout(state.device,
+      &pipeline_layout_info, nullptr,
       &state.compute_pipeline_layout);
 
   VkComputePipelineCreateInfo compute_pipeline_info = {
     .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-    .stage = &stage_info,
+    .stage = stage_info,
     .layout = state.compute_pipeline_layout
   };
   res = vkCreateComputePipelines(state.device, VK_NULL_HANDLE, 1,
@@ -1079,8 +1107,6 @@ void setup_depth_resources(AppState& state) {
       VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 }
 
-const uint32_t MAX_NUM_VERTICES = (int) 1e6;
-
 void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
   BufferState& buf_state = state.buffer_states[buf_index];
 
@@ -1095,10 +1121,10 @@ void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         buf_state.vert_buffers[i], buf_state.vert_buffer_mems[i]);
 
-    auto buffer_view_info = {
+    VkBufferViewCreateInfo buffer_view_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
       .buffer = buf_state.vert_buffers[i],
-      .format = VK_FORMAT_R32G32B32_SFLOAT,
+      .format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .offset = 0,
       .range = VK_WHOLE_SIZE
     };
@@ -1118,7 +1144,7 @@ void setup_buffer_state_render_desc_sets(AppState& state, int buf_index) {
     .pSetLayouts = &state.render_desc_set_layout
   };
   VkResult res = vkAllocateDescriptorSets(state.device,
-      &render_desc_set_alloc_info, &state.render_desc_set);
+      &render_desc_set_alloc_info, &buf_state.render_desc_set);
   assert(res == VK_SUCCESS);
 
   vector<VkWriteDescriptorSet> writes;
@@ -1130,7 +1156,7 @@ void setup_buffer_state_render_desc_sets(AppState& state, int buf_index) {
       .dstArrayElement = 0,
       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
       .descriptorCount = 1,
-      .pTexelBufferView = buf_state.vert_buffer_views[i],
+      .pTexelBufferView = &buf_state.vert_buffer_views[i],
     };
     writes.push_back(write);
   }
@@ -1149,14 +1175,14 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
     .pSetLayouts = &state.compute_desc_set_layout
   };
   VkResult res = vkAllocateDescriptorSets(state.device,
-      &alloc_info, &state.compute_desc_set);
+      &alloc_info, &buf_state.compute_desc_set);
   assert(res == VK_SUCCESS);
  
   vector<VkWriteDescriptorSet> writes;
   for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
     VkBufferView buf_view = i < ATTRIBUTES_COUNT ?
       buf_state.vert_buffer_views[i] :
-      other_buf.vert_buffer_views[i % ATTRIBUTES_COUNT];
+      other_buf_state.vert_buffer_views[i % ATTRIBUTES_COUNT];
     
     VkWriteDescriptorSet write = {
       .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1165,7 +1191,7 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
       .dstArrayElement = 0,
       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
       .descriptorCount = 1,
-      .pTexelBufferView = buf_view,
+      .pTexelBufferView = &buf_view,
     };
     writes.push_back(write);
   }
@@ -1188,6 +1214,7 @@ void setup_buffer_states(AppState& state) {
 }
 
 // TODO - remove
+/*
 void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
   VkDeviceSize buffer_size = sizeof(vertices[0]) * vertices.size();
 
@@ -1220,10 +1247,15 @@ void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
   vkDestroyBuffer(state.device, staging_buffer, nullptr);
   vkFreeMemory(state.device, staging_buffer_mem, nullptr);
 }
+*/
 
-void setup_index_buffer(AppState& state, vector<uint16_t>& indices) {
-  create_index_buffer(state,
-      indices, state.index_buffer, state.index_buffer_mem);
+void setup_index_buffer(AppState& state) {
+  create_buffer(state.device, state.phys_device, INDEX_BUFFER_SIZE,
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        state.index_buffer, state.index_buffer_mem);
+
 }
 
 void setup_descriptor_pool(AppState& state) {
@@ -1258,42 +1290,20 @@ void setup_command_buffers(AppState& state) {
   assert(res == VK_SUCCESS);
 }
 
-struct StagingBuf {
-  VkBuffer buf;
-  VkDeviceMemory mem;
-
-  StagingBuf(AppState& state);
-  void cleanup(AppState& state);
-};
-
-StagingBuf::StagingBuf(AppState& state, uint32_t buffer_size)
-{
-  create_buffer(state.device, state.phys_device, buffer_size,
-      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      buf, mem);
-}
-
-void StagingBuf::cleanup(AppState& state) {
-  vkDestroyBuffer(state.device, buf, nullptr);
-  vkFreeMemory(state.device, mem, nullptr);
-}
-
 void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
-  VkDeviceSize buffer_size = sizeof(vec4) * node_vecs.pos_vec.size()
+  VkDeviceSize buffer_size = sizeof(vec4) * node_vecs.pos_vec.size();
 
   StagingBuf staging(state, buffer_size);
   
   // Always write to the first buffer
   BufferState& buf_state = state.buffer_states[0];
 
+  vector<void*> copy_srcs = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
     void* data;
     vkMapMemory(state.device, staging.mem,
         0, buffer_size, 0, &data);
-    memcpy(data, node_vecs[i].data(), (size_t) buffer_size);
+    memcpy(data, copy_srcs[i], (size_t) buffer_size);
     vkUnmapMemory(state.device, staging.mem);
     copy_buffer(state,
         staging.buf, buf_state.vert_buffers[i], buffer_size);
@@ -1302,18 +1312,14 @@ void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   staging.cleanup(state);
 }
 
-MorphNodes read_nodes_from_buffers(AppState& state,
-    MorphNodes& node_vecs) {
+MorphNodes read_nodes_from_buffers(AppState& state) {
   BufferState& buf_state = state.buffer_states[state.result_buffer];
   MorphNodes node_vecs(state.node_count);
   VkDeviceSize buffer_size = sizeof(vec4) * state.node_count;
 
   StagingBuf staging(state, buffer_size);
 
-  vector<void*> copy_dsts = {
-    node_vecs.pos_vec.data(), node_vecs.vel_vec.data(),
-    node_vecs.neighbors_vec.data(), node_vecs.data_vec.data()
-  };
+  vector<void*> copy_dsts = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
     copy_buffer(state, buf_state.vert_buffers[i],
         staging.buf, buffer_size);
@@ -1400,7 +1406,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
       VK_SHADER_STAGE_VERTEX_BIT, 0,
       sizeof(RenderPushConstants), &push_consts);
-  vkCmdDraw(cmd_buffers[i], state.node_count, 1, 0, 0);
+  vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
   // TODO - use indexed later
   /*
   vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
@@ -1463,22 +1469,34 @@ void cleanup_swapchain(AppState& state) {
   // https://github.com/KhronosGroup/MoltenVK/issues/584
   // Validation layer will complain for now
   //vkDestroySwapchainKHR(state.device, state.swapchain, nullptr);
-
-  vkFreeDescriptorSets(state.device, state.desc_pool,
-      (uint32_t) state.desc_sets.size(), state.desc_sets.data());
 }
 
 void cleanup_vulkan(AppState& state) {
   cleanup_swapchain(state);
 
+  // cleanup the buffer states
+  for (BufferState& buf_state : state.buffer_states) {
+    for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
+      vkDestroyBufferView(state.device,
+          buf_state.vert_buffer_views[i], nullptr);
+      vkDestroyBuffer(state.device,
+          buf_state.vert_buffers[i], nullptr);
+      vkFreeMemory(state.device,
+          buf_state.vert_buffer_mems[i], nullptr);
+    }
+  }
+  vkDestroyPipeline(state.device, state.compute_pipeline, nullptr);
+  vkDestroyPipelineLayout(state.device, state.compute_pipeline_layout, nullptr);
+
   vkDestroyDescriptorPool(state.device, state.desc_pool, nullptr);
   
-  vkDestroyDescriptorSetLayout(state.device, state.desc_set_layout, nullptr);
+  vkDestroyDescriptorSetLayout(state.device,
+      state.render_desc_set_layout, nullptr);
+  vkDestroyDescriptorSetLayout(state.device,
+      state.compute_desc_set_layout, nullptr);
 
   vkDestroyBuffer(state.device, state.index_buffer, nullptr);
   vkFreeMemory(state.device, state.index_buffer_mem, nullptr);
-  vkDestroyBuffer(state.device, state.vert_buffer, nullptr);
-  vkFreeMemory(state.device, state.vert_buffer_mem, nullptr);
 
   for (int i = 0; i < max_frames_in_flight; ++i) {
     vkDestroySemaphore(state.device, state.render_done_semas[i], nullptr);
@@ -1534,26 +1552,7 @@ void recreate_swapchain(AppState& state) {
 }
 
 void init_vulkan(AppState& state) {
-  VkResult res;
 
-  vector<Vertex> vertices = {
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-
-		{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-  };
-  state.indices = {
-    0, 1, 2,
-    2, 3, 0,
-		4, 5, 6,
-		6, 7, 4
-  };
-  
   setup_vertex_attr_desc(state);
   setup_instance(state);
   setup_debug_callback(state);
@@ -1563,14 +1562,15 @@ void init_vulkan(AppState& state) {
   setup_swapchain(state);
   setup_command_pool(state);
   setup_depth_resources(state);
-  setup_framebuffers(state);
-  setup_index_buffer(state, state.indices);
+  setup_index_buffer(state);
+
+  setup_desc_set_layouts(state);
 
   setup_renderpass(state);
+  setup_framebuffers(state);
   setup_graphics_pipeline(state);
   setup_compute_pipeline(state);
 
-  setup_desc_set_layouts(state);
   setup_descriptor_pool(state);
   setup_buffer_states(state);
 
@@ -1634,7 +1634,7 @@ void render_frame(AppState& state) {
   state.current_frame = (current_frame + 1) % max_frames_in_flight;
 }
 
-void run_simulation(AppState& state) {
+void run_simulation_pipeline(AppState& state) {
   // TODO
   printf("TODO - run_simulation\n");
 }

@@ -81,6 +81,14 @@ MorphNode MorphNodes::node_at(size_t i) const {
       neighbors_vec[i], data_vec[i]);
 }
 
+vector<void*> MorphNodes::data_ptrs() { 
+  vector<void*> data_ptrs = {
+    pos_vec.data(), vel_vec.data(), neighbors_vec.data(),
+    data_vec.data()
+  };
+  return data_ptrs;
+}
+
 string raw_node_str(MorphNode const& node) {
   array<char, 200> s;
   sprintf(s.data(), "pos: %s, vel: %s, neighbors: %s, data: %s",

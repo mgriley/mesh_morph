@@ -1,11 +1,15 @@
 #include "utils.h"
 
-void handle_segfault(int sig_num) {
+void print_backtrace() {
   array<void*, 15> frames{};
   int num_frames = backtrace(frames.data(), frames.size());
+    backtrace_symbols_fd(frames.data(), num_frames, STDERR_FILENO);
+}
+
+void handle_segfault(int sig_num) {
   fprintf(stdout, "SEGFAULT to stdout");
   fprintf(stderr, "SEGFAULT signal: %d\n", sig_num);
-  backtrace_symbols_fd(frames.data(), num_frames, STDERR_FILENO);
+  print_backtrace();
   exit(1);
 }
 

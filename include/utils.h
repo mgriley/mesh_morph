@@ -29,6 +29,7 @@
 using namespace std;
 using namespace glm;
 
+void print_backtrace();
 void handle_segfault(int sig_num);
 void glfw_error_callback(int error, const char* description);
 

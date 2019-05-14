@@ -4,6 +4,8 @@
 
 const int MAX_NUM_USER_UNIFS = 100;
 
+class AppState;
+
 struct Camera {
   mat4 cam_to_world = mat4(1.0);
 
@@ -58,13 +60,13 @@ struct UserUnif {
 };
 
 struct RenderPushConstants {
-  mat4 model;
-  mat4 view;
-  mat4 proj;
+  mat4 model = mat4(1.0);
+  mat4 view = mat4(1.0);
+  mat4 proj = mat4(1.0);
 
   array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
 
-  RenderPushConstants(mat4 model, mat4 view, mat4 view,
+  RenderPushConstants(mat4 model, mat4 view, mat4 proj,
       const vector<UserUnif>& user_unifs);
 };
 
@@ -104,6 +106,8 @@ struct MorphNodes {
   MorphNodes(size_t num_nodes);
   MorphNodes(vector<MorphNode> const& nodes);
   MorphNode node_at(size_t i) const;
+
+  vector<void*> data_ptrs();
 };
 
 string raw_node_str(MorphNode const& node);
@@ -114,8 +118,8 @@ struct BufferState {
   array<VkDeviceMemory, ATTRIBUTES_COUNT> vert_buffer_mems;
   array<VkBufferView, ATTRIBUTES_COUNT> vert_buffer_views;
 
-  VkDescriptorSet render_desc_set;
-  VkDescriptorSet compute_desc_set;
+  VkDescriptorSet render_desc_set = VK_NULL_HANDLE;
+  VkDescriptorSet compute_desc_set = VK_NULL_HANDLE;
 
   BufferState();
 };
