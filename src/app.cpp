@@ -79,6 +79,7 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
       assert(num_matches >= 1);
       s = strchr(s, '\n') + 1;
 
+      // Note: name will actually include the ; char in this case
       char name[100];
       num_matches = sscanf(s,
         " vec4 %s;", name);
@@ -1406,7 +1407,10 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
       VK_SHADER_STAGE_VERTEX_BIT, 0,
       sizeof(RenderPushConstants), &push_consts);
-  vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
+
+  if (state.node_count > 0) {
+    vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
+  }
   // TODO - use indexed later
   /*
   vkCmdDrawIndexed(state.cmd_buffers[i], (uint32_t) indices.size(),
@@ -1634,8 +1638,26 @@ void render_frame(AppState& state) {
   state.current_frame = (current_frame + 1) % max_frames_in_flight;
 }
 
-void run_simulation_pipeline(AppState& state) {
-  // TODO
+void run_debug_test(AppState& state) {
+  printf("running debug test\n");
+  vector<MorphNode> nodes = {
+    MorphNode(vec4(0.0f), vec4(0.0f), vec4(0.0f), vec4(0.0f)),
+    MorphNode(vec4(0.0f), vec4(1.0f), vec4(2.0f), vec4(3.0f)),
+  };
+  MorphNodes in_node_vecs(nodes);
+  printf("in nodes:\n");
+  log_nodes(in_node_vecs);
+  printf("\n");
+
+  write_nodes_to_buffers(state, in_node_vecs);
+  state.node_count = nodes.size();
+
+  MorphNodes out_node_vecs = read_nodes_from_buffers(state);
+  printf("out nodes:\n");
+  log_nodes(out_node_vecs);
+}
+
+void run_simulation_pipeline(AppState& state) { 
   printf("TODO - run_simulation\n");
 }
 
@@ -1667,6 +1689,10 @@ void handle_key_event(GLFWwindow* win, int key, int scancode,
   // TODO
   if (key == GLFW_KEY_C && action == GLFW_PRESS) {
     run_simulation_pipeline(*state);  
+  }
+  // TODO
+  if (key == GLFW_KEY_N && action == GLFW_PRESS) {
+    run_debug_test(*state);
   }
 }
 

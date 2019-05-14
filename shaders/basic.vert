@@ -33,7 +33,7 @@ layout(binding = 7) uniform imageBuffer buf_data;
 */
 
 void main() {
-  gl_PointSize = 1.0f;
+  gl_PointSize = 5.0f;
   gl_Position = unif.proj * unif.view * unif.model *
     vec4(in_pos.xyz, 1.0);
   frag_color = unif.col.rgb;
