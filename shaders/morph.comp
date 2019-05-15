@@ -33,13 +33,14 @@ layout(binding = 7, rgba32f) uniform imageBuffer out_data;
 
 Node step(Node in_node) {
   Node out_node = in_node;
+
   out_node.pos += vec4(1.0,0.0,0.0,0.0);
 
   return out_node;
 }
 
 void main() {
-  int id = int(gl_GlobalInvocationID.x);
+  int id = int(gl_GlobalInvocationID.x); 
 
   Node in_node = {
     imageLoad(in_pos, id),
