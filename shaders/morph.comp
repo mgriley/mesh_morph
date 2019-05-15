@@ -9,10 +9,34 @@ layout(push_constant) uniform Unifs {
   uint iter_num;
 
 // BEGIN_USER_UNIFS
-  // comps 3 min 0.0 max 1.0 speed 0.01 def 1.0 1.0 1.0
-  vec4 test;
+  // comps 1 min 0.0 max 1.0 speed 1.0 def 0.0
+  vec4 fix_positions;
+  // comps 1 min 0.0 max 1.0 speed 0.001 def 0.5
+  vec4 norm_src_pos;
+  // comps 3 min -1.0 max 1.0 speed 0.001 def 0.0 1.0 0.0
+  vec4 init_src_dir;
+  // comps 1 min 0.0 max 100.0 speed 0.01 def 10.0
+  vec4 src_heat_gen_rate;
+  // comps 1 min 0.0 max 1.0 speed 0.001 def 0.2
+  vec4 heat_transfer_coeff;
+  // comps 1 min 0.0 max 3.0 speed 0.01 def 0.1
+  vec4 target_spring_len;
+  // comps 2 min 0.0 max 1.0 speed 0.01 def 0.05 0.1
+  vec4 spring_coeffs;
+  // comps 3 min 0.0 max 3.0 speed 0.01 def 0.0 0.25 0.25
+  vec4 force_coeffs;
+  // comps 3 min 0.0 max 1.0 speed 0.001 def 0.05 0.45 0.0
+  vec4 src_trans_probs;
+  // comps 3 min 0.0 max 1.0 speed 0.005 def 1.0 1.0 0.5
+  vec4 cloning_coeffs;
+  // comps 1 min 0.0 max 600.0 speed 0.1 def 40.0
+  vec4 cloning_interval;
 // END_USER_UNIFS
 } unif;
+
+int id() {
+  return int(gl_GlobalInvocationID.x);
+}
 
 struct Node {
   vec4 pos;
@@ -31,16 +55,299 @@ layout(binding = 5, rgba32f) uniform imageBuffer out_vel;
 layout(binding = 6, rgba32f) uniform imageBuffer out_neighbors;
 layout(binding = 7, rgba32f) uniform imageBuffer out_data;
 
+const float pi = 3.141592;
+
+// Noise functions
+
+vec2 hash2(vec2 p) { p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3))); return fract(sin(p)*18.5453); }
+vec3 hash3(float n) { return fract(sin(vec3(n,n+1.0,n+2.0))*vec3(338.5453123,278.1459123,191.1234)); }
+float hash(vec2 p) {
+	return fract(dot(hash2(p),vec2(1.0,0.0)));
+}
+vec3 hash3(vec3 p) {
+	p=vec3(dot(p,vec3(127.1,311.7,732.1)),dot(p,vec3(269.5,183.3,23.1)),dot(p,vec3(893.1,21.4,781.2))); return fract(sin(p)*18.5453);	
+}
+float hash3to1(vec3 p) {
+	return fract(dot(hash3(p),vec3(32.32,321.3,123.2)));
+}
+
+Node run_init_step(Node in_node) {
+  int side_len = int(sqrt(unif.node_count));
+  int target_src_id = int(unif.node_count *
+    unif.norm_src_pos.x + 0.5 * side_len);
+  vec4 out_vel = vec4(0.0);
+  if (id() == target_src_id) {
+    out_vel = vec4(normalize(unif.init_src_dir.xyz),
+      unif.src_heat_gen_rate.x);
+  }
+  Node out_node = {
+    vec4(in_node.pos.xyz, 0.0),
+    out_vel,
+    in_node.neighbors,
+    vec4(-1.0)
+  };
+  return out_node;
+}
+
+vec4 compute_heat_emit(float cur_heat, vec4 node_neighbors) { 
+  float alpha = unif.heat_transfer_coeff.x;
+  vec4 out_heats = vec4(0.0);
+  for (int i = 0; i < 4; ++i) {
+    int n_index = int(node_neighbors[i]);
+    if (n_index == -1.0) {
+      // treat exterior as 0-heat neighbor
+      out_heats[i] = alpha * cur_heat;
+    } else {
+      float n_heat = imageLoad(in_pos, n_index).w;
+      if (n_heat < cur_heat) {
+        out_heats[i] = alpha * (cur_heat - n_heat);
+      }
+    }
+  }
+  // normalize the amt emit out each edge so that we don't emit
+  // more than we have available
+  float total_emit = dot(out_heats, vec4(1.0));
+  if (total_emit > 0.0) {
+    out_heats = (out_heats / total_emit) * min(total_emit, cur_heat);
+  }
+  return out_heats;  
+}
+
+// Conserves heat and enforces a min heat of 0
+// Note: this strategy works so long as compute_heat_emit conserves
+// heat, which is nice.
+// Mental model: at every frame transition you send out heat to neighbors
+// and simultaneously receive heat from them.
+float compute_next_heat(Node in_node) {
+  vec4 my_out_heats = compute_heat_emit(in_node.pos.w, in_node.neighbors);
+  float total_heat_out = dot(my_out_heats, vec4(1.0));
+
+  float total_heat_in = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    int n_index = int(in_node.neighbors[i]);
+    if (n_index != -1.0) {
+      float other_heat = imageLoad(in_pos, n_index).w;
+      if (in_node.pos.w < other_heat) {
+        // the heat in from this neighbor is the heat that it emits along
+        // the edge pointing to this node
+        vec4 other_neighbors = imageLoad(in_neighbors, n_index);
+        vec4 other_out_heats = compute_heat_emit(other_heat, other_neighbors);
+        // i is the index of edge a<->b according to a, and (i + 2) % 4 is
+        // the index of edge a<->b according to b
+        total_heat_in += other_out_heats[(i + 2) % 4];
+      }
+    }
+  }
+  total_heat_in += in_node.vel.w;
+  return in_node.pos.w - total_heat_out + total_heat_in;
+}
+
+vec3 node_normal(vec3 node_pos, vec4 node_neighbors) {
+  vec3 nor = vec3(0.0,1.0,0.0);
+  for (int i = 0; i < 4; ++i) {
+    int i_a = int(node_neighbors[i]);
+    int i_b = int(node_neighbors[(i + 1) % 4]);
+    if (i_a != -1 && i_b != -1) {
+      vec3 p_a = imageLoad(in_pos, i_a).xyz;
+      vec3 p_b = imageLoad(in_pos, i_b).xyz;
+      // TODO - why is this the 'up' direction, seems like the negative
+      // sign should be unneccessary
+      nor = normalize(-cross(p_a - node_pos, p_b - node_pos));
+      break;
+    }
+  }
+  return nor;
+}
+
+int rand_neighbor_index(vec3 node_pos, vec4 node_neighbors) {
+  int n_index = clamp(int(4.0 * hash3(unif.iter_num * node_pos).x), 0, 3);
+  // incr n_index until we find a valid neighbor
+  for (int i = 0; i < 4; ++i) {
+    if (node_neighbors[n_index] == -1.0) {
+      n_index = (n_index + 1) % 4;
+    }
+  }
+  return n_index;
+}
+
+// Return the index of the neighbor that is furthest in the target direction
+// Note: target_dir must be normalized
+int directed_neighbor(vec3 node_pos, vec4 node_neighbors, vec3 target_dir) {
+  int out_index = -1;
+  float largest_dot = -2.0;
+  for (int i = 0; i < 4; ++i) {
+    int n_index = int(node_neighbors[i]);
+    if (n_index != -1) {
+      vec3 n_pos = imageLoad(in_pos, n_index).xyz;
+      float d = dot(n_pos - node_pos, target_dir);
+      if (out_index == -1 || d > largest_dot) {
+        out_index = i;
+        largest_dot = d;
+      }
+    }
+  }
+  return out_index;
+}
+
+void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data) {
+  vec4 next_vel = in_node.vel;
+  vec4 next_data = vec4(-1.0);
+
+  vec3 trans_noise = hash3(in_node.pos.xyz * unif.iter_num);
+  if (in_node.vel.w == 0.0) {
+    // check if a neighbor has requested to be cloned
+    bool did_promote = false;
+    for (int i = 0; i < 4; ++i) {
+      int n_index = int(in_node.neighbors[i]);
+      if (n_index != -1) {
+        vec4 n_data = imageLoad(in_data, n_index);
+        if (int(n_data.w) == (i + 2) % 4) {
+          // neighbor has requested that this node be its clone
+          float gen_amt = length(n_data.xyz);
+          next_vel = vec4(normalize(n_data.xyz), gen_amt);
+          next_data = vec4(-1.0);
+          did_promote = true;
+        }
+      }
+    }
+
+    // promote this node to a src with some probability
+    if (!did_promote && trans_noise.z < unif.src_trans_probs.z) {
+      vec3 nor = node_normal(in_node.pos.xyz, in_node.neighbors);
+      next_vel = vec4(nor, unif.src_heat_gen_rate.x);
+      next_data = vec4(-1.0);
+    }
+  } else {
+    // this node is currently a source
+
+    // clone if right conditions
+    bool is_cloning = false;
+    if (unif.iter_num % int(unif.cloning_interval.x) == 0) {
+      // turn on the request
+      // Note that we encode the gen_amt as the vector len.
+      // This only works b/c the gen_amt is strictly positive!
+      
+      // create two new vecs mirrored across the current vec
+      // pi * cloning_coeffs.z is the desired angle b/w the two vecs
+      float tangent_len = tan(0.5 * pi * unif.cloning_coeffs.z);
+      vec3 tangent_vec =
+        tangent_len * normalize(cross(in_node.vel.xyz, trans_noise));
+      vec3 my_dir = normalize(in_node.vel.xyz - tangent_vec);
+      vec3 clone_dir = normalize(in_node.vel.xyz + tangent_vec);
+
+      float clone_gen_amt = unif.cloning_coeffs.y * in_node.vel.w;
+      //int target_n = rand_neighbor_index(in_node.pos.xyz, in_node.neighbors);
+      int target_n = directed_neighbor(in_node.pos.xyz, in_node.neighbors, clone_dir);
+      next_vel = vec4(my_dir, unif.cloning_coeffs.x * in_node.vel.w);
+      next_data = vec4(clone_gen_amt * clone_dir, target_n);
+      is_cloning = true;
+    }
+
+    // traverse mesh if right conditions
+    bool is_walking = false;
+    if (!is_cloning && trans_noise.y < unif.src_trans_probs.y) {
+      // Note that neighbor could be a src, in which case
+      // we effectively eliminate a src.
+      //int target_n = rand_neighbor_index(in_node.pos.xyz, in_node.neighbors);
+      int target_n = directed_neighbor(in_node.pos.xyz, in_node.neighbors, in_node.vel.xyz);
+      next_vel = vec4(0.0);
+      next_data = vec4(in_node.vel.w * in_node.vel.xyz, target_n);
+      is_walking = true;
+    }
+
+    if (!is_cloning && !is_walking) {
+      // no msg for neighbors
+      next_vel = in_node.vel;
+      next_data = vec4(-1.0);
+    }
+  }
+  out_vel = next_vel;
+  out_data = next_data;
+}
+
+vec3 compute_next_pos(Node in_node) {
+  bool is_fixed = false;
+  vec3 force = vec3(0.0);
+  vec3 delta_heat = vec3(0.0);
+  float largest_delta = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    int n_i = int(in_node.neighbors[i]);
+    if (n_i != -1) {
+      vec4 n_pos = imageLoad(in_pos, n_i);
+      vec3 delta_pos = n_pos.xyz - in_node.pos.xyz;
+      float spring_len = length(delta_pos);
+      float spring_factor = spring_len < unif.target_spring_len.x ?
+        unif.spring_coeffs.x : unif.spring_coeffs.y;
+      force += spring_factor * normalize(delta_pos) *
+        (spring_len - unif.target_spring_len.x);
+
+      if (n_pos.w - in_node.pos.w > largest_delta) {
+        delta_heat = normalize(n_pos.xyz - in_node.pos.xyz);      
+        largest_delta = n_pos.w - in_node.pos.w;
+      }
+    } else {
+      is_fixed = true;
+    }
+  }
+
+  if (in_node.vel.w != 0.0) {
+    force += unif.force_coeffs.y * in_node.vel.xyz;
+  } else {
+    force += unif.force_coeffs.z * delta_heat;
+  }
+  // anneal if low heat (eh, this did not work out)
+  //force *= clamp(pos.w, 0.0, 1.0);
+
+  vec3 p_next = in_node.pos.xyz + force; 
+
+  if (is_fixed) {
+    p_next = in_node.pos.xyz;
+  }
+  return p_next;
+}
+
+Node run_reg_step(Node in_node) {
+  vec3 next_pos = compute_next_pos(in_node);
+  float next_heat = compute_next_heat(in_node);
+  vec4 next_vel = vec4(0.0);
+  vec4 next_data = vec4(0.0);
+  compute_source_transition(in_node, next_vel, next_data);
+
+  if (int(unif.fix_positions.x) == 1.0) {
+    next_pos = in_node.pos.xyz;
+  }
+
+  Node out_node = {
+    vec4(next_pos, next_heat),
+    next_vel,
+    in_node.neighbors,
+    next_data
+  };
+  return out_node;
+}
+
 Node step(Node in_node) {
   Node out_node = in_node;
+  if (unif.iter_num == 0) {
+    out_node = run_init_step(in_node);
+  } else {
+    out_node = run_reg_step(in_node);
+  }
+  return out_node;
+}
 
+// TODO - remove
+Node test_step(Node in_node) {
+  Node out_node = in_node;
   out_node.pos += vec4(1.0,0.0,0.0,0.0);
-
   return out_node;
 }
 
 void main() {
   int id = int(gl_GlobalInvocationID.x); 
+  if (id >= unif.node_count) {
+    return;  
+  }
 
   Node in_node = {
     imageLoad(in_pos, id),

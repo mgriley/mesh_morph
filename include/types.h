@@ -32,10 +32,10 @@ struct Controls {
   bool log_output_nodes = false;
   bool log_render_data = false;
   bool log_durations = false;
-  int num_zygote_samples = 2;
+  int num_zygote_samples = 20;
   // for the simulation/animation pane
   int num_iters = 0;
-  bool animating_sim = false;
+  bool animating_sim = true;
   bool loop_at_end = false;
   int start_iter_num = 0;
   int end_iter_num = 10*1000*1000;

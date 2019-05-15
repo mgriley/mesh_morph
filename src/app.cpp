@@ -22,8 +22,7 @@
 const uint32_t MAX_NUM_VERTICES = (int) 1e6;
 const uint32_t MAX_NUM_INDICES = (int) 1e6;
 
-// TODO - modify this (256 should be fine)
-const uint32_t LOCAL_WORKGROUP_SIZE = 1;
+const uint32_t LOCAL_WORKGROUP_SIZE = 256;
 
 const int max_frames_in_flight = 2;
 
@@ -1526,15 +1525,20 @@ void cleanup_vulkan(AppState& state) {
   vkDestroyInstance(state.inst, nullptr);
 }
 
-void recreate_graphics_pipeline(AppState& state) {
+void reload_programs(AppState& state) {
   vkDeviceWaitIdle(state.device);
 
-  // cleanup current pipeline
+  // recreate graphics and compute pipelines
+
   vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
   vkDestroyPipelineLayout(state.device,
       state.render_pipeline_layout, nullptr);
-
   setup_graphics_pipeline(state);
+
+  vkDestroyPipeline(state.device, state.compute_pipeline, nullptr);
+  vkDestroyPipelineLayout(state.device,
+      state.compute_pipeline_layout, nullptr);
+  setup_compute_pipeline(state);
 }
 
 void recreate_swapchain(AppState& state) {
@@ -1846,7 +1850,7 @@ void handle_key_event(GLFWwindow* win, int key, int scancode,
   if (key == GLFW_KEY_P && action == GLFW_PRESS) {
     // TODO - also recreate the compute pipeline
     printf("reloading program\n");
-		recreate_graphics_pipeline(*state);
+    reload_programs(*state);
   }
   if (key == GLFW_KEY_C && action == GLFW_PRESS) {
     run_simulation_pipeline(*state);  
