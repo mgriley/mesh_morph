@@ -22,6 +22,9 @@
 const uint32_t MAX_NUM_VERTICES = (int) 1e6;
 const uint32_t MAX_NUM_INDICES = (int) 1e6;
 
+// TODO - modify this (256 should be fine)
+const uint32_t LOCAL_WORKGROUP_SIZE = 1;
+
 const int max_frames_in_flight = 2;
 
 static void check_vk_result(VkResult res) {
@@ -877,11 +880,22 @@ void setup_compute_pipeline(AppState& state) {
   VkShaderModule shader_module = create_shader_module(
       state.device, shader_code);
 
+  vector<uint32_t> spec_data = {LOCAL_WORKGROUP_SIZE};
+  vector<VkSpecializationMapEntry> spec_entries = {
+    {1, 0, sizeof(uint32_t)}
+  };
+  VkSpecializationInfo spec_info = {
+    .mapEntryCount = (uint32_t) spec_entries.size(),
+    .pMapEntries = spec_entries.data(),
+    .dataSize = sizeof(spec_data[0]) * spec_data.size(),
+    .pData = spec_data.data()
+  };
   VkPipelineShaderStageCreateInfo stage_info = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
     .stage = VK_SHADER_STAGE_COMPUTE_BIT,
     .module = shader_module,
-    .pName = "main"
+    .pName = "main",
+    .pSpecializationInfo = &spec_info
   };
   VkPushConstantRange push_constant_range = {
     .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -1155,7 +1169,7 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
  
   vector<VkWriteDescriptorSet> writes;
   for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
-    VkBufferView buf_view = i < ATTRIBUTES_COUNT ?
+    VkBufferView& buf_view = i < ATTRIBUTES_COUNT ?
       buf_state.vert_buffer_views[i] :
       other_buf_state.vert_buffer_views[i % ATTRIBUTES_COUNT];
     
@@ -1291,8 +1305,11 @@ void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   staging.cleanup(state);
 }
 
-MorphNodes read_nodes_from_buffers(AppState& state) {
-  BufferState& buf_state = state.buffer_states[state.result_buffer];
+MorphNodes read_nodes_from_buffers(AppState& state, uint32_t buf_index) {
+  if (state.node_count == 0) {
+    return MorphNodes(0);
+  }
+  BufferState& buf_state = state.buffer_states[buf_index];
   MorphNodes node_vecs(state.node_count);
   VkDeviceSize buffer_size = sizeof(vec4) * state.node_count;
 
@@ -1638,9 +1655,18 @@ void run_debug_test(AppState& state) {
 
   write_nodes_to_buffers(state, in_node_vecs);
 
-  MorphNodes out_node_vecs = read_nodes_from_buffers(state);
+  MorphNodes out_node_vecs = read_nodes_from_buffers(
+      state, state.result_buffer);
   printf("out nodes:\n");
   log_nodes(out_node_vecs);
+}
+
+void log_buffers(AppState& state) {
+  for (uint32_t i = 0; i < state.buffer_states.size(); ++i) {
+    MorphNodes out_node_vecs = read_nodes_from_buffers(state, i);
+    printf("buffer %d:\n", i);
+    log_nodes(out_node_vecs);
+  }
 }
 
 vec3 gen_sphere(vec2 unit) {
@@ -1737,61 +1763,52 @@ void set_initial_sim_data(AppState& state) {
   write_nodes_to_buffers(state, node_vecs);
 }
 
-// TODO - remove
-/*
-void run_simulation(GraphicsState& g_state, int num_iters) {
-  MorphState& m_state = g_state.morph_state;
+void dispatch_simulation(AppState& state) {
+  
+  VkCommandBuffer tmp_buffer = begin_single_time_commands(state);
 
-  MorphProgram& m_prog = m_state.programs[m_state.cur_prog_index];
+  VkMemoryBarrier mem_barrier = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT
+  };
 
-  glUseProgram(m_prog.gl_handle);
-  glValidateProgram(m_prog.gl_handle);
-  log_program_info_logs(m_prog.name + ", validate program log",
-      m_prog.gl_handle);
+  vkCmdBindPipeline(tmp_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+      state.compute_pipeline);
+  
+  uint32_t num_iters = state.controls.num_iters;
+  for (uint32_t i = 0; i < num_iters; ++i) {
+    BufferState& cur_buf = state.buffer_states[i & 1];
 
-  glEnable(GL_RASTERIZER_DISCARD);
-
-  // Set uniforms
-  for (UserUnif& user_unif : m_prog.user_unifs) {
-    glUniform4fv(user_unif.gl_handle, 1, &user_unif.cur_val[0]);
-  }
-  glUniform1i(m_prog.unif_num_nodes, m_state.num_nodes);
-
-  // perform double-buffered iterations
-  // assume the initial data is in buffer 0
-  for (int i = 0; i < num_iters; ++i) {
-    MorphBuffer& cur_buf = m_state.buffers[i & 1];
-    MorphBuffer& next_buf = m_state.buffers[(i + 1) & 1];
-
-    // set uniforms
-    glUniform1i(m_prog.unif_iter_num, i);
-
-    // setup texture buffers and transform feedback buffers
-    // TODO - is this necessary every iteration, or just once?
-    glBindVertexArray(cur_buf.vao);
-    for (int i = 0; i < MORPH_BUF_COUNT; ++i) {
-      glActiveTexture(GL_TEXTURE0 + i);
-      glBindTexture(GL_TEXTURE_BUFFER, cur_buf.tex_bufs[i]);
-
-      glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, i, next_buf.vbos[i]);
+    if (i > 0) {
+      // require that the previous iter writes are available to
+      // this iteration's reads
+      vkCmdPipelineBarrier(tmp_buffer,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+          1, &mem_barrier,
+          0, nullptr,
+          0, nullptr);
     }
 
-    glBeginTransformFeedback(GL_POINTS);
-    glDrawArrays(GL_POINTS, 0, m_state.num_nodes);
-    glEndTransformFeedback();
+    // TODO - are these bindings read at the time that the dispatch is
+    // recorded, or when it executes? Makes massive difference
+
+    vkCmdBindDescriptorSets(tmp_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+        state.compute_pipeline_layout, 0, 1, &cur_buf.compute_desc_set,
+        0, nullptr);
+
+    ComputePushConstants push_consts(state.node_count, i, state.compute_unifs);
+    vkCmdPushConstants(tmp_buffer, state.compute_pipeline_layout,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        sizeof(ComputePushConstants), &push_consts);
+
+    uint32_t groups_x = state.node_count / LOCAL_WORKGROUP_SIZE + 1;
+    vkCmdDispatch(tmp_buffer, groups_x, 1, 1);
   }
-  // store the index of the most recently written buffer
-  m_state.result_buffer_index = num_iters % 2;
+  state.result_buffer = num_iters & 1;
 
-  glDisable(GL_RASTERIZER_DISCARD);
-
-  log_gl_errors("done simulation");
-}
-*/
-
-
-void dispatch_simulation(AppState& state) {
-  printf("TODO dispatch simulation\n");
+  end_single_time_commands(state, tmp_buffer);
 }
 
 void run_simulation_pipeline(AppState& state) { 
@@ -1799,7 +1816,8 @@ void run_simulation_pipeline(AppState& state) {
   dispatch_simulation(state);
 
   if (state.controls.log_output_nodes) {
-    MorphNodes node_vecs = read_nodes_from_buffers(state);
+    MorphNodes node_vecs = read_nodes_from_buffers(
+        state, state.result_buffer);
     printf("output nodes:\n");
     log_nodes(node_vecs);
   }
@@ -2038,6 +2056,9 @@ void create_ui(AppState& state) {
   ImGui::Checkbox("log output nodes", &controls.log_output_nodes);
   ImGui::Checkbox("log render data", &controls.log_render_data);
   ImGui::Checkbox("log durations", &controls.log_durations);
+  if (ImGui::Button("log buffers")) {
+    log_buffers(state);
+  }
   // do not log while animating, the IO becomes a bottleneck
   if (controls.animating_sim) {
     controls.log_input_nodes = false;

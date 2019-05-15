@@ -111,18 +111,26 @@ UserUnif::UserUnif(string name, int num_comps, vec4 default_val,
 {
 }
 
-RenderPushConstants::RenderPushConstants(mat4 model, mat4 view,
-    mat4 proj, const vector<UserUnif>& user_unifs) :
-  model(model), view(view), proj(proj)
-{
+void set_user_unif_vals(const vector<UserUnif>& user_unifs,
+    array<vec4, MAX_NUM_USER_UNIFS>& user_unif_vals) {
   assert(user_unifs.size() < user_unif_vals.size());
   for (int i = 0; i < user_unifs.size(); ++i) {
     user_unif_vals[i] = user_unifs[i].current_val;
   }
 }
 
-ComputePushConstants::ComputePushConstants()
+RenderPushConstants::RenderPushConstants(mat4 model, mat4 view,
+    mat4 proj, const vector<UserUnif>& user_unifs) :
+  model(model), view(view), proj(proj)
 {
+  set_user_unif_vals(user_unifs, user_unif_vals);  
+}
+
+ComputePushConstants::ComputePushConstants(uint32_t node_count,
+    uint32_t iter_num, const vector<UserUnif>& user_unifs) :
+  node_count(node_count), iter_num(iter_num)
+{
+  set_user_unif_vals(user_unifs, user_unif_vals);  
 }
 
 BufferState::BufferState()

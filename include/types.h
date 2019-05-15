@@ -32,10 +32,10 @@ struct Controls {
   bool log_output_nodes = false;
   bool log_render_data = false;
   bool log_durations = false;
-  int num_zygote_samples = 100;
+  int num_zygote_samples = 2;
   // for the simulation/animation pane
   int num_iters = 0;
-  bool animating_sim = true;
+  bool animating_sim = false;
   bool loop_at_end = false;
   int start_iter_num = 0;
   int end_iter_num = 10*1000*1000;
@@ -64,7 +64,6 @@ struct RenderPushConstants {
   mat4 model = mat4(1.0);
   mat4 view = mat4(1.0);
   mat4 proj = mat4(1.0);
-
   array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
 
   RenderPushConstants(mat4 model, mat4 view, mat4 proj,
@@ -72,10 +71,12 @@ struct RenderPushConstants {
 };
 
 struct ComputePushConstants {
-
+  uint32_t node_count;
+  uint32_t iter_num;
   array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
 
-  ComputePushConstants();
+  ComputePushConstants(uint32_t node_count, uint32_t iter_num,
+      const vector<UserUnif>& user_unifs);
 };
 
 enum Attributes {

@@ -1,7 +1,12 @@
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
+// the workgroup x size is a specialization constant
+layout (local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
+
 layout(push_constant) uniform Unifs {
+  uint node_count;
+  uint iter_num;
 
 // BEGIN_USER_UNIFS
   // comps 3 min 0.0 max 1.0 speed 0.01 def 1.0 1.0 1.0
@@ -9,18 +14,45 @@ layout(push_constant) uniform Unifs {
 // END_USER_UNIFS
 } unif;
 
-/*
-layout(binding = 0) uniform imageBuffer in_pos;
-layout(binding = 1) uniform imageBuffer in_vel;
-layout(binding = 2) uniform imageBuffer in_neighbors;
-layout(binding = 3) uniform imageBuffer in_data;
+struct Node {
+  vec4 pos;
+  vec4 vel;
+  vec4 neighbors;
+  vec4 data;
+};
 
-layout(binding = 4) uniform imageBuffer out_pos;
-layout(binding = 5) uniform imageBuffer out_vel;
-layout(binding = 6) uniform imageBuffer out_neighbors;
-layout(binding = 7) uniform imageBuffer out_data;
-*/
+layout(binding = 0, rgba32f) uniform imageBuffer in_pos;
+layout(binding = 1, rgba32f) uniform imageBuffer in_vel;
+layout(binding = 2, rgba32f) uniform imageBuffer in_neighbors;
+layout(binding = 3, rgba32f) uniform imageBuffer in_data;
+
+layout(binding = 4, rgba32f) uniform imageBuffer out_pos;
+layout(binding = 5, rgba32f) uniform imageBuffer out_vel;
+layout(binding = 6, rgba32f) uniform imageBuffer out_neighbors;
+layout(binding = 7, rgba32f) uniform imageBuffer out_data;
+
+Node step(Node in_node) {
+  Node out_node = in_node;
+  out_node.pos += vec4(1.0,0.0,0.0,0.0);
+
+  return out_node;
+}
 
 void main() {
-  // TODO
+  int id = int(gl_GlobalInvocationID.x);
+
+  Node in_node = {
+    imageLoad(in_pos, id),
+    imageLoad(in_vel, id),
+    imageLoad(in_neighbors, id),
+    imageLoad(in_data, id)
+  };
+
+  Node out_node = step(in_node);
+  
+  imageStore(out_pos, id, out_node.pos);
+  imageStore(out_vel, id, out_node.vel);
+  imageStore(out_neighbors, id, out_node.neighbors);
+  imageStore(out_data, id, out_node.data);
 }
+
