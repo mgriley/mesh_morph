@@ -349,7 +349,7 @@ void setup_vertex_attr_desc(AppState& state) {
     VkVertexInputAttributeDescription attr_desc = {
       .binding = i,
       .location = i,
-      .format = VK_FORMAT_R32G32B32_SFLOAT,
+      .format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .offset = 0
     };
     state.vert_attr_descs.push_back(attr_desc);
@@ -1374,7 +1374,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   assert(res == VK_SUCCESS);
 
   array<VkClearValue, 2> clear_values = {};
-  clear_values[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
+  clear_values[0].color = {1.0f, 1.0f, 1.0f, 1.0f};
   clear_values[1].depthStencil = {1.0f, 0};
 
   VkRenderPassBeginInfo render_pass_info = {
