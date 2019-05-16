@@ -1748,21 +1748,6 @@ void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes) {
   out_nodes = std::move(vertex_nodes);
 }
 
-vector<uint16_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
-  // TODO
-  vector<uint16_t> indices;
-  return indices;
-}
-
-// Taken from:
-// https://stackoverflow.com/questions/2590677/how-do-i-combine-hash-values-in-c0x
-template <class T>
-inline void hash_combine(std::size_t& seed, const T& v) {
-	std::hash<T> hasher;
-	seed ^= hasher(v) + 0x9e3779b9 + (seed<<6) + (seed>>2);
-}
-
-
 using IndexPair = std::pair<uint16_t, uint16_t>;
 
 struct IndexPairHash {
@@ -1773,6 +1758,13 @@ struct IndexPairHash {
     return seed;
 	}
 };
+
+vector<uint16_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
+  // TODO - faces is harder than one might think, defer
+  // Points and lines is sufficient for visualization
+  vector<uint16_t> indices;
+  return indices;
+}
 
 vector<uint16_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
 
