@@ -7,6 +7,7 @@ layout (local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
 layout(push_constant) uniform Unifs {
   uint node_count;
   uint iter_num;
+  uint queue_len;
 
 // BEGIN_USER_UNIFS
   // comps 1 min 0.0 max 1.0 speed 1.0 def 0.0
@@ -57,7 +58,11 @@ layout(binding = 7, rgba32f) uniform imageBuffer out_data;
 
 layout(binding = 8) buffer ComputeStorage {
   uint step_counters[2];
-} shared_storage;
+
+  uint start_ptrs[2];
+  uint end_ptrs[2];
+  uint queue_mem[];
+} store;
 
 const float pi = 3.141592;
 
@@ -347,6 +352,58 @@ Node test_step(Node in_node) {
   return out_node;
 }
 
+bool push_index(uint index, out uint res) {
+  uint cur_index = unif.iter_num & 1;
+  uint next_index = (unif.iter_num + 1) & 1;
+
+  uint start_ptr = store.start_ptrs[cur_index];
+  uint orig_ptr = atomicAdd(
+    store.end_ptrs[next_index], 1);
+  if (orig_ptr - start_ptr + 1 <= unif.queue_len) {
+    res = orig_ptr % unif.queue_len;
+    return true;
+  }
+  return false;
+}
+
+bool pop_index(out uint res) {
+  uint cur_index = unif.iter_num & 1;
+  uint next_index = (unif.iter_num + 1) & 1;
+
+  uint end_ptr = store.end_ptrs[cur_index];
+  uint orig_ptr = atomicAdd(
+    store.start_ptrs[next_index], 1);
+  if (orig_ptr < end_ptr) {
+    res = orig_ptr % unif.queue_len;  
+    return true;
+  }
+  return false;
+}
+
+// TODO - we may actually have to use a separate compute stage
+// unsure if the writes from other invocations are available,
+// even though the ctr mechanism guarentees that they happened
+// before now. Actually, they should be provided we're only working
+// with atomics (access serialized and available).
+// Double-check that such is guaranteed.
+void exclusive_step() {
+  // prepare the queue for the next iter
+  uint cur_index = unif.iter_num & 1;
+  uint next_index = (unif.iter_num + 1) & 1;
+  
+  // TODO - be very careful here, what happens if they hit
+  // the limits (edge cases for empty queue and full queue) ?
+  // Note: are atomics really necessary here?
+  atomicMax(store.start_ptrs[next_index],
+    store.end_ptrs[cur_index]);
+  atomicMax(store.end_ptrs[next_index],
+    store.start_ptrs[cur_index] + unif.queue_len);
+  atomicExchange(store.start_ptrs[cur_index],
+    store.start_ptrs[next_index]);
+  atomicExchange(store.end_ptrs[cur_index],
+    store.end_ptrs[next_index]);
+}
+
 void main() {
   int id = int(gl_GlobalInvocationID.x); 
   if (id >= unif.node_count) {
@@ -367,7 +424,15 @@ void main() {
   imageStore(out_neighbors, id, out_node.neighbors);
   imageStore(out_data, id, out_node.data);
 
-  shared_storage.step_counters[0] = 1;
-  shared_storage.step_counters[1] = 2;
+  // increment the current counter, and perform an exclusive step if
+  // we are the last node to get here. 
+  // clear the next counter to 0
+  uint orig_ctr = atomicAdd(
+    store.step_counters[unif.iter_num & 1], 1);
+  if (orig_ctr == unif.node_count - 1) {
+    exclusive_step(); 
+  }
+  atomicExchange(
+    store.step_counters[(unif.iter_num + 1) & 1], 0);
 }
 

@@ -3,6 +3,7 @@
 #include "utils.h"
 
 const int MAX_NUM_USER_UNIFS = 100;
+const uint32_t STORAGE_QUEUE_LEN = 1*1000; 
 
 class AppState;
 
@@ -83,6 +84,11 @@ struct UserUnif {
 struct ComputeStorage {
   array<uint32_t, 2> step_counters = {0, 0};
 
+  // for circular buffer queue
+  array<uint32_t, 2> start_ptrs = {0, 0};
+  array<uint32_t, 2> end_ptrs = {0, 0};
+  array<uint32_t, STORAGE_QUEUE_LEN> queue_mem;
+
   ComputeStorage();
 };
 
@@ -99,9 +105,11 @@ struct RenderPushConstants {
 struct ComputePushConstants {
   uint32_t node_count;
   uint32_t iter_num;
+  uint32_t queue_len;
   array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
 
   ComputePushConstants(uint32_t node_count, uint32_t iter_num,
+      uint32_t queue_len,
       const vector<UserUnif>& user_unifs);
 };
 

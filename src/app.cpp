@@ -1907,8 +1907,9 @@ void set_initial_sim_data(AppState& state) {
 }
 
 void log_compute_storage(ComputeStorage& cs) {
-  printf("ctr0 %4d, ctr1 %4d\n",
-      cs.step_counters[0], cs.step_counters[1]);
+  printf("ctr0 %4d, ctr1 %4d\npayload: %4d\n",
+      cs.step_counters[0], cs.step_counters[1],
+      cs.payload);
 }
 
 void write_to_compute_storage(AppState& state,
@@ -1967,9 +1968,11 @@ void dispatch_simulation(AppState& state) {
         state.compute_pipeline_layout, 0, 1, &cur_buf.compute_desc_set,
         0, nullptr);
 
-    ComputePushConstants push_consts(state.node_count, i, state.compute_unifs);
+    ComputePushConstants push_consts(
+        state.node_count, i,
+        state.compute_unifs);
     vkCmdPushConstants(tmp_buffer, state.compute_pipeline_layout,
-        VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, STORAGE_QUEUE_LEN,
         sizeof(ComputePushConstants), &push_consts);
 
     uint32_t groups_x = state.node_count / LOCAL_WORKGROUP_SIZE + 1;

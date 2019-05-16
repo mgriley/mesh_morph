@@ -131,8 +131,9 @@ RenderPushConstants::RenderPushConstants(mat4 model, mat4 view,
 }
 
 ComputePushConstants::ComputePushConstants(uint32_t node_count,
-    uint32_t iter_num, const vector<UserUnif>& user_unifs) :
-  node_count(node_count), iter_num(iter_num)
+    uint32_t iter_num, uint32_t queue_len,
+    const vector<UserUnif>& user_unifs) :
+  node_count(node_count), iter_num(iter_num), queue_len(queue_len)
 {
   set_user_unif_vals(user_unifs, user_unif_vals);  
 }
