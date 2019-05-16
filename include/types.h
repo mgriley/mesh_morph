@@ -6,6 +6,23 @@ const int MAX_NUM_USER_UNIFS = 100;
 
 class AppState;
 
+enum Attributes {
+  ATTRIB_POS = 0,
+  ATTRIB_VEL,
+  ATTRIB_NEIGHBORS,
+  ATTRIB_DATA,
+
+  ATTRIBUTES_COUNT
+};
+
+enum PipelineTypes {
+  POINTS_PIPELINE,
+  LINES_PIPELINE,
+  TRIANGLES_PIPELINE,
+
+  PIPELINES_COUNT
+};
+
 struct Camera {
   mat4 cam_to_world = mat4(1.0);
 
@@ -23,16 +40,17 @@ struct Controls {
   int target_fps = 30;
 
   // rendering
-  bool render_faces = false;
-  bool render_points = true;
-  bool render_wireframe = true;
+  array<bool, PIPELINES_COUNT> pipeline_toggles =
+    {true, false, false};
 
   // simulation
   bool log_input_nodes = false;
   bool log_output_nodes = false;
-  bool log_render_data = false;
+  bool log_point_indices = false;
+  bool log_line_indices = false;
+  bool log_triangle_indices = false;
   bool log_durations = false;
-  int num_zygote_samples = 20;
+  int num_zygote_samples = 40;
   // for the simulation/animation pane
   int num_iters = 0;
   bool animating_sim = true;
@@ -79,15 +97,6 @@ struct ComputePushConstants {
       const vector<UserUnif>& user_unifs);
 };
 
-enum Attributes {
-  ATTRIB_POS = 0,
-  ATTRIB_VEL,
-  ATTRIB_NEIGHBORS,
-  ATTRIB_DATA,
-
-  ATTRIBUTES_COUNT
-};
-
 struct MorphNode {
   vec4 pos = vec4(0.0);
   vec4 vel = vec4(0.0);
@@ -131,8 +140,6 @@ struct AppState {
   int result_buffer = 0;
   // number of vertices currently in the vertex buffers
   uint32_t node_count = 0;
-  // number of indices currently in the index buffer
-  uint32_t index_count = 0;
 
   Camera cam;
   Controls controls;
@@ -142,9 +149,6 @@ struct AppState {
 
   GLFWwindow* win = nullptr;
   bool framebuffer_resized = false;
-
-  // TODO - required?
-  vector<uint16_t> indices;
 
   PFN_vkDestroyDebugUtilsMessengerEXT destroy_debug_utils;
   
@@ -175,15 +179,18 @@ struct AppState {
 
   VkRenderPass render_pass;
   VkPipelineLayout render_pipeline_layout;
-  VkPipeline graphics_pipeline;
+  array<VkPipeline, PIPELINES_COUNT> graphics_pipelines;
 
   VkPipelineLayout compute_pipeline_layout;
   VkPipeline compute_pipeline;
 
   vector<VkFramebuffer> swapchain_framebuffers;
 
-  VkBuffer index_buffer;
-  VkDeviceMemory index_buffer_mem;
+  // contains the index data for rendering with each different
+  // graphics pipeline
+  array<VkBuffer, PIPELINES_COUNT> index_buffers;
+  array<VkDeviceMemory, PIPELINES_COUNT> index_buffer_mems;
+  array<uint32_t, PIPELINES_COUNT> index_counts;
 
   VkCommandPool cmd_pool;
   vector<VkCommandBuffer> cmd_buffers;

@@ -14,6 +14,7 @@
 #include <utility>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -726,7 +727,7 @@ void setup_desc_set_layouts(AppState& state) {
   setup_compute_desc_set_layout(state);
 }
 
-void setup_graphics_pipeline(AppState& state) {
+void setup_graphics_pipelines(AppState& state) {
   vector<UserUnif> vertex_unifs, frag_unifs;
   auto vert_shader_code = process_shader_file(
       "vertex shader", "../shaders/basic.vert",
@@ -761,13 +762,20 @@ void setup_graphics_pipeline(AppState& state) {
     .vertexAttributeDescriptionCount = (uint32_t) state.vert_attr_descs.size(),
     .pVertexAttributeDescriptions = state.vert_attr_descs.data()
   };
-  VkPipelineInputAssemblyStateCreateInfo input_assembly_info = {
-    .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-    // TODO - make a pipeline for each variation
-    //.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-    .topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-    .primitiveRestartEnable = VK_FALSE
+  array<VkPrimitiveTopology, PIPELINES_COUNT> topologies = {
+    VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+    VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
   };
+  array<VkPipelineInputAssemblyStateCreateInfo, PIPELINES_COUNT> input_assembly_infos;
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    VkPipelineInputAssemblyStateCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+      .topology = topologies[i],
+      .primitiveRestartEnable = VK_FALSE
+    };
+    input_assembly_infos[i] = info;
+  }
   VkViewport viewport = {
     .x = 0.0f,
     .y = 0.0f,
@@ -845,27 +853,40 @@ void setup_graphics_pipeline(AppState& state) {
       &pipeline_layout_info, nullptr,
       &state.render_pipeline_layout);
   assert(res == VK_SUCCESS);
-
-  VkGraphicsPipelineCreateInfo graphics_pipeline_info = {
-    .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-    .stageCount = 2,
-    .pStages = shader_stages.data(),
-    .pVertexInputState = &vertex_input_info,
-    .pInputAssemblyState = &input_assembly_info,
-    .pViewportState = &viewport_state_info,
-    .pRasterizationState = &rast_info,
-    .pMultisampleState = &multisampling,
-    .pDepthStencilState = &depth_stencil,
-    .pColorBlendState = &color_blending,
-    .pDynamicState = nullptr,
-    .layout = state.render_pipeline_layout,
-    .renderPass = state.render_pass,
-    .subpass = 0,
-    .basePipelineHandle = VK_NULL_HANDLE,
-    .basePipelineIndex = -1
-  };
-  res = vkCreateGraphicsPipelines(state.device, VK_NULL_HANDLE, 1,
-      &graphics_pipeline_info, nullptr, &state.graphics_pipeline);
+  
+  // create a pipeline for each type of input assembly
+  // designate the first pipeline as the parent and the rest
+  // will be derivatives. this may result in optimizations, unsure
+  array<VkGraphicsPipelineCreateInfo, PIPELINES_COUNT> graphics_pipeline_infos;
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    VkPipelineCreateFlags flags = i == 0 ?
+      VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT :
+      VK_PIPELINE_CREATE_DERIVATIVE_BIT;
+    VkGraphicsPipelineCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+      .flags = flags,
+      .stageCount = (uint32_t) shader_stages.size(),
+      .pStages = shader_stages.data(),
+      .pVertexInputState = &vertex_input_info,
+      .pInputAssemblyState = &input_assembly_infos[i],
+      .pViewportState = &viewport_state_info,
+      .pRasterizationState = &rast_info,
+      .pMultisampleState = &multisampling,
+      .pDepthStencilState = &depth_stencil,
+      .pColorBlendState = &color_blending,
+      .pDynamicState = nullptr,
+      .layout = state.render_pipeline_layout,
+      .renderPass = state.render_pass,
+      .subpass = 0,
+      .basePipelineHandle = VK_NULL_HANDLE,
+      .basePipelineIndex = 0
+    };
+    graphics_pipeline_infos[i] = info;
+  }
+  res = vkCreateGraphicsPipelines(state.device, VK_NULL_HANDLE,
+      (uint32_t) graphics_pipeline_infos.size(),
+      graphics_pipeline_infos.data(), nullptr,
+      state.graphics_pipelines.data());
   assert(res == VK_SUCCESS);
 
   vkDestroyShaderModule(state.device, vert_module, nullptr);
@@ -1237,14 +1258,15 @@ void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
 }
 */
 
-void setup_index_buffer(AppState& state) {
-  create_buffer(state.device, state.phys_device,
-      sizeof(uint16_t) * MAX_NUM_INDICES,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        state.index_buffer, state.index_buffer_mem);
-
+void setup_index_buffers(AppState& state) {
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    create_buffer(state.device, state.phys_device,
+        sizeof(uint16_t) * MAX_NUM_INDICES,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          state.index_buffers[i], state.index_buffer_mems[i]);
+  }
 }
 
 void setup_descriptor_pool(AppState& state) {
@@ -1279,6 +1301,16 @@ void setup_command_buffers(AppState& state) {
   assert(res == VK_SUCCESS);
 }
 
+void copy_data_to_buffer(AppState& state, StagingBuf& staging,
+    void* src_data, uint32_t buffer_size, VkBuffer& dst_buffer) {
+  void* staging_data;
+  vkMapMemory(state.device, staging.mem,
+      0, buffer_size, 0, &staging_data);
+  memcpy(staging_data, src_data, (size_t) buffer_size);
+  vkUnmapMemory(state.device, staging.mem);
+  copy_buffer(state, staging.buf, dst_buffer, buffer_size);
+}
+
 void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   uint32_t node_count = node_vecs.pos_vec.size();
   assert(node_count < MAX_NUM_VERTICES);
@@ -1292,13 +1324,8 @@ void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
 
   vector<void*> copy_srcs = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
-    void* data;
-    vkMapMemory(state.device, staging.mem,
-        0, buffer_size, 0, &data);
-    memcpy(data, copy_srcs[i], (size_t) buffer_size);
-    vkUnmapMemory(state.device, staging.mem);
-    copy_buffer(state,
-        staging.buf, buf_state.vert_buffers[i], buffer_size);
+    copy_data_to_buffer(state, staging,
+        copy_srcs[i], buffer_size, buf_state.vert_buffers[i]);
   }
 
   staging.cleanup(state);
@@ -1330,22 +1357,6 @@ MorphNodes read_nodes_from_buffers(AppState& state, uint32_t buf_index) {
   return node_vecs;
 }
 
-void write_indices_to_buffer(AppState& state, vector<uint16_t>& indices) {
-  assert(indices.size() < MAX_NUM_INDICES);
-  state.index_count = indices.size();
-
-  VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
-  StagingBuf staging(state, buffer_size);
-
-  void* data;
-  vkMapMemory(state.device, staging.mem, 0, buffer_size, 0, &data);
-  memcpy(data, indices.data(), (size_t) buffer_size);
-  vkUnmapMemory(state.device, staging.mem);
-  copy_buffer(state, staging.buf, state.index_buffer, buffer_size);
-
-  staging.cleanup(state);
-}
-
 void log_nodes(MorphNodes& node_vecs) {
   printf("%lu nodes:\n", node_vecs.pos_vec.size()); 
   for (int i = 0; i < node_vecs.pos_vec.size(); ++i) {
@@ -1355,8 +1366,7 @@ void log_nodes(MorphNodes& node_vecs) {
   printf("\n\n");
 }
 
-void record_render_pass(AppState& state, uint32_t buffer_index,
-    vector<uint16_t>& indices) {
+void record_render_pass(AppState& state, uint32_t buffer_index) {
   uint32_t i = buffer_index;
 
   // moves the command buffer back to the initial state so that we
@@ -1378,7 +1388,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
   clear_values[1].depthStencil = {1.0f, 0};
 
   VkRenderPassBeginInfo render_pass_info = {
-    .sType= VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
     .renderPass = state.render_pass,
     .framebuffer = state.swapchain_framebuffers[i],
     .renderArea.offset = {0, 0},
@@ -1403,34 +1413,40 @@ void record_render_pass(AppState& state, uint32_t buffer_index,
       state.render_unifs);
 
   vkCmdBeginRenderPass(state.cmd_buffers[i], &render_pass_info,
-      VK_SUBPASS_CONTENTS_INLINE);
-  vkCmdBindPipeline(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
-      state.graphics_pipeline);
-  vkCmdBindVertexBuffers(state.cmd_buffers[i], 0, vert_buffers.size(),
-      vert_buffers.data(), byte_offsets.data());
-  vkCmdBindIndexBuffer(state.cmd_buffers[i], state.index_buffer, 0,
-      VK_INDEX_TYPE_UINT16);
-  vkCmdBindDescriptorSets(state.cmd_buffers[i],
-      VK_PIPELINE_BIND_POINT_GRAPHICS,
-      state.render_pipeline_layout, 0, 1,
-      &buf_state.render_desc_set, 0, nullptr);
-  vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
-      VK_SHADER_STAGE_VERTEX_BIT, 0,
-      sizeof(RenderPushConstants), &push_consts);
+        VK_SUBPASS_CONTENTS_INLINE);
 
-  if (state.node_count > 0) {
-    vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
+  // draw the structure for each active pipeline 
+  for (uint32_t pipeline_index = 0; pipeline_index < PIPELINES_COUNT; ++pipeline_index) {
+    if (!state.controls.pipeline_toggles[pipeline_index] ||
+        state.index_counts[pipeline_index] == 0) {
+      continue;
+    }
+    vkCmdBindPipeline(state.cmd_buffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS,
+        state.graphics_pipelines[pipeline_index]);
+    vkCmdBindVertexBuffers(state.cmd_buffers[i], 0, vert_buffers.size(),
+        vert_buffers.data(), byte_offsets.data());
+    vkCmdBindIndexBuffer(state.cmd_buffers[i],
+        state.index_buffers[pipeline_index], 0, VK_INDEX_TYPE_UINT16);
+    vkCmdBindDescriptorSets(state.cmd_buffers[i],
+        VK_PIPELINE_BIND_POINT_GRAPHICS,
+        state.render_pipeline_layout, 0, 1,
+        &buf_state.render_desc_set, 0, nullptr);
+    vkCmdPushConstants(state.cmd_buffers[i], state.render_pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT, 0,
+        sizeof(RenderPushConstants), &push_consts);
+
+    // TODO - remove later
+    //vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
+
+    vkCmdDrawIndexed(state.cmd_buffers[i], state.index_counts[pipeline_index],
+        1, 0, 0, 0);
   }
-  // TODO - use indexed later
-  /*
-  vkCmdDrawIndexed(state.cmd_buffers[i], state.index_count,
-      1, 0, 0, 0);
-  */
 
   ImGui_ImplVulkan_RenderDrawData(
       ImGui::GetDrawData(), state.cmd_buffers[i]);
-
+    
   vkCmdEndRenderPass(state.cmd_buffers[i]);
+
   res = vkEndCommandBuffer(state.cmd_buffers[i]);
   assert(res == VK_SUCCESS);
 }
@@ -1470,7 +1486,9 @@ void cleanup_swapchain(AppState& state) {
   vkFreeCommandBuffers(state.device, state.cmd_pool,
       (uint32_t) state.cmd_buffers.size(), state.cmd_buffers.data());
 
-  vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
+  for (VkPipeline& pipeline : state.graphics_pipelines) {
+    vkDestroyPipeline(state.device, pipeline, nullptr);
+  }
   vkDestroyPipelineLayout(state.device, state.render_pipeline_layout, nullptr);
 
   vkDestroyRenderPass(state.device, state.render_pass, nullptr);
@@ -1507,8 +1525,10 @@ void cleanup_vulkan(AppState& state) {
   vkDestroyDescriptorSetLayout(state.device,
       state.compute_desc_set_layout, nullptr);
 
-  vkDestroyBuffer(state.device, state.index_buffer, nullptr);
-  vkFreeMemory(state.device, state.index_buffer_mem, nullptr);
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    vkDestroyBuffer(state.device, state.index_buffers[i], nullptr);
+    vkFreeMemory(state.device, state.index_buffer_mems[i], nullptr);
+  }
 
   for (int i = 0; i < max_frames_in_flight; ++i) {
     vkDestroySemaphore(state.device, state.render_done_semas[i], nullptr);
@@ -1530,10 +1550,12 @@ void reload_programs(AppState& state) {
 
   // recreate graphics and compute pipelines
 
-  vkDestroyPipeline(state.device, state.graphics_pipeline, nullptr);
+  for (VkPipeline& pipeline : state.graphics_pipelines) {
+    vkDestroyPipeline(state.device, pipeline, nullptr);
+  }
   vkDestroyPipelineLayout(state.device,
       state.render_pipeline_layout, nullptr);
-  setup_graphics_pipeline(state);
+  setup_graphics_pipelines(state);
 
   vkDestroyPipeline(state.device, state.compute_pipeline, nullptr);
   vkDestroyPipelineLayout(state.device,
@@ -1556,7 +1578,7 @@ void recreate_swapchain(AppState& state) {
 
   setup_swapchain(state);
   setup_renderpass(state);
-  setup_graphics_pipeline(state);
+  setup_graphics_pipelines(state);
   setup_depth_resources(state);
   setup_framebuffers(state);
   setup_command_buffers(state);
@@ -1574,13 +1596,13 @@ void init_vulkan(AppState& state) {
   setup_swapchain(state);
   setup_command_pool(state);
   setup_depth_resources(state);
-  setup_index_buffer(state);
+  setup_index_buffers(state);
 
   setup_desc_set_layouts(state);
 
   setup_renderpass(state);
   setup_framebuffers(state);
-  setup_graphics_pipeline(state);
+  setup_graphics_pipelines(state);
   setup_compute_pipeline(state);
 
   setup_descriptor_pool(state);
@@ -1607,7 +1629,7 @@ void render_frame(AppState& state) {
     return;
   } 
     
-  record_render_pass(state, img_index, state.indices);
+  record_render_pass(state, img_index);
 
   // submit cmd buffer to pipeline
   vector<VkPipelineStageFlags> wait_stages = {
@@ -1702,12 +1724,10 @@ int coord_to_index(ivec2 coord, ivec2 samples) {
   }
 }
 
-// Outputs the nodes and the triangle indices, for rendering
-void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes, vector<uint16_t>& out_indices) {
+// Outputs the nodes, for rendering
+void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes) {
   vector<MorphNode> vertex_nodes;
-  vector<uint16_t> indices;
   vertex_nodes.reserve(samples[0] * samples[1]);
-  indices.reserve(6 * (samples[0] - 1) * (samples[1] - 1));
   for (int y = 0; y < samples[1]; ++y) {
     for (int x = 0; x < samples[0]; ++x) {
       ivec2 coord(x, y);
@@ -1723,42 +1743,125 @@ void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes, vector<uint16_t
 
       MorphNode vert_node(vec4(pos, 0.0), vec4(0.0), neighbors, vec4(0.0));
       vertex_nodes.push_back(vert_node);
-
-      // if this is the lower-left vert of a valid face, add the indices for
-      // the two triangles that make up the quad
-      if (right_neighbor != -1 && upper_neighbor != -1) {
-        int my_index = coord_to_index(coord, samples);
-        int opposite_neighbor = coord_to_index(coord + ivec2(1, 1), samples);
-        assert(opposite_neighbor != -1);
-        vector<uint16_t> new_indices = {
-          (uint16_t) my_index, (uint16_t) right_neighbor, (uint16_t) opposite_neighbor,
-          (uint16_t) my_index, (uint16_t) opposite_neighbor, (uint16_t) upper_neighbor
-        };
-        indices.insert(indices.end(), new_indices.begin(), new_indices.end());
-      }
     }
   }
   out_nodes = std::move(vertex_nodes);
-  out_indices = std::move(indices);
+}
+
+vector<uint16_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
+  // TODO
+  vector<uint16_t> indices;
+  return indices;
+}
+
+// Taken from:
+// https://stackoverflow.com/questions/2590677/how-do-i-combine-hash-values-in-c0x
+template <class T>
+inline void hash_combine(std::size_t& seed, const T& v) {
+	std::hash<T> hasher;
+	seed ^= hasher(v) + 0x9e3779b9 + (seed<<6) + (seed>>2);
+}
+
+
+using IndexPair = std::pair<uint16_t, uint16_t>;
+
+struct IndexPairHash {
+	size_t operator()(const IndexPair& pair) const {
+    size_t seed = 0;
+    hash_combine(seed, pair.first);
+    hash_combine(seed, pair.second);
+    return seed;
+	}
+};
+
+vector<uint16_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
+
+  // add a line for every valid edge
+  // use a set of edges to prevent duplicates
+  vector<uint16_t> indices;
+  uint32_t node_count = node_vecs.pos_vec.size();
+  unordered_set<IndexPair, IndexPairHash> edge_set;
+  for (uint32_t i = 0; i < node_count; ++i) {
+    vec4 neighbors = node_vecs.neighbors_vec[i];  
+    for (int j = 0; j < 4; ++j) {
+      int n_index = neighbors[j];
+      if (n_index == -1.0) {
+        continue;
+      }
+      IndexPair pair = i < n_index ?
+        IndexPair(i, n_index) : IndexPair(n_index, i);
+      if (edge_set.find(pair) == edge_set.end()) {
+        edge_set.insert(pair);
+        indices.push_back(pair.first);
+        indices.push_back(pair.second);
+      }
+    }
+  }
+  return indices;
+}
+
+vector<uint16_t> gen_point_indices(AppState& state, MorphNodes& node_vecs) {
+  uint32_t node_count = node_vecs.pos_vec.size();
+  vector<uint16_t> indices(node_count);
+  for (uint32_t i = 0; i < node_count; ++i) {
+    indices[i] = i;
+  }
+  return indices;
+}
+
+void update_indices(AppState& state, MorphNodes& node_vecs) {
+  array<vector<uint16_t>, PIPELINES_COUNT> pipeline_indices = {
+    gen_point_indices(state, node_vecs),
+    gen_line_indices(state, node_vecs),
+    gen_triangle_indices(state, node_vecs)
+  };
+
+  // debug logging
+  vector<tuple<const char*, bool, int>> log_toggles = {
+    {"point", state.controls.log_point_indices, 1},
+    {"line", state.controls.log_line_indices, 2},
+    {"triangle", state.controls.log_triangle_indices, 3}
+  };
+  for (uint32_t p_i = 0; p_i < PIPELINES_COUNT; ++p_i) {
+    const char* label = get<0>(log_toggles[p_i]);
+    bool should_print = get<1>(log_toggles[p_i]);
+    int entries_per_line = get<2>(log_toggles[p_i]);
+    if (!should_print) {
+      continue;
+    }
+    vector<uint16_t>& indices = pipeline_indices[p_i];
+    printf("\n%s indices (%lu):\n", label, indices.size());
+    for (int i = 0; i < indices.size(); ++i) {
+      printf("%s%4d ",
+          i % entries_per_line == 0 ? "\n" : "", indices[i]);
+    }
+    printf("\n");
+  }
+
+  // copy the indices to their respective buffers
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    vector<uint16_t>& indices = pipeline_indices[i];
+    if (indices.size() == 0) {
+      continue;
+    }
+    assert(indices.size() < MAX_NUM_INDICES);
+    state.index_counts[i] = indices.size();
+    VkDeviceSize buffer_size = sizeof(indices[0]) * indices.size();
+
+    StagingBuf staging(state, buffer_size);
+    copy_data_to_buffer(state, staging, indices.data(),
+        buffer_size, state.index_buffers[i]);
+    staging.cleanup(state);
+  }
 }
 
 void set_initial_sim_data(AppState& state) {
 
   ivec2 zygote_samples(state.controls.num_zygote_samples);
   vector<MorphNode> nodes;
-  vector<uint16_t> indices;
-  gen_morph_data(zygote_samples, nodes, indices);
+  gen_morph_data(zygote_samples, nodes);
   MorphNodes node_vecs(nodes);
-  write_indices_to_buffer(state, indices);
-
-  // debug logging
-  if (state.controls.log_render_data) {
-    printf("\n\nindex data (%lu):\n", indices.size());
-    for (int i = 0; i < indices.size(); i += 3) {
-      ivec3 face(indices[i], indices[i + 1], indices[i + 2]);
-      printf("%4d %s\n", i, to_string(face).c_str());
-    }
-  }
+ 
   if (state.controls.log_input_nodes) {
     printf("input nodes:\n");
     log_nodes(node_vecs);
@@ -1819,9 +1922,12 @@ void run_simulation_pipeline(AppState& state) {
   set_initial_sim_data(state);
   dispatch_simulation(state);
 
+  MorphNodes node_vecs = read_nodes_from_buffers(
+      state, state.result_buffer);
+
+  update_indices(state, node_vecs);
+
   if (state.controls.log_output_nodes) {
-    MorphNodes node_vecs = read_nodes_from_buffers(
-        state, state.result_buffer);
     printf("output nodes:\n");
     log_nodes(node_vecs);
   }
@@ -2003,9 +2109,12 @@ void create_ui(AppState& state) {
 
   ImGui::Separator();
   ImGui::Text("render controls:");
-  ImGui::Checkbox("render faces", &controls.render_faces);
-  ImGui::Checkbox("render points", &controls.render_points);
-  ImGui::Checkbox("render wireframe", &controls.render_wireframe);
+  array<const char*, PIPELINES_COUNT> pipeline_names = {
+    "points", "lines", "triangles"
+  };
+  for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
+    ImGui::Checkbox(pipeline_names[i], &controls.pipeline_toggles[i]);
+  }
 
   ImGui::Separator();
   ImGui::Text("render program controls:");
@@ -2058,7 +2167,9 @@ void create_ui(AppState& state) {
   ImGui::Text("Note that logging will not occur while animating");
   ImGui::Checkbox("log input nodes", &controls.log_input_nodes);
   ImGui::Checkbox("log output nodes", &controls.log_output_nodes);
-  ImGui::Checkbox("log render data", &controls.log_render_data);
+  ImGui::Checkbox("log point indices", &controls.log_point_indices);
+  ImGui::Checkbox("log line indices", &controls.log_line_indices);
+  ImGui::Checkbox("log triangle indices", &controls.log_triangle_indices);
   ImGui::Checkbox("log durations", &controls.log_durations);
   if (ImGui::Button("log buffers")) {
     log_buffers(state);
@@ -2067,7 +2178,9 @@ void create_ui(AppState& state) {
   if (controls.animating_sim) {
     controls.log_input_nodes = false;
     controls.log_output_nodes = false;
-    controls.log_render_data = false;
+    controls.log_point_indices = false;
+    controls.log_line_indices = false;
+    controls.log_triangle_indices = false;
     controls.log_durations = false;
   }
 
