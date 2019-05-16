@@ -31,6 +31,12 @@ layout(binding = 5, rgba32f) uniform imageBuffer out_vel;
 layout(binding = 6, rgba32f) uniform imageBuffer out_neighbors;
 layout(binding = 7, rgba32f) uniform imageBuffer out_data;
 
+/*
+layout(binding = 8) buffer shared_storage {
+  uint step_counters[2];
+};
+*/
+
 Node step(Node in_node) {
   Node out_node = in_node;
 

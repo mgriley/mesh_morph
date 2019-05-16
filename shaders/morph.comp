@@ -55,6 +55,10 @@ layout(binding = 5, rgba32f) uniform imageBuffer out_vel;
 layout(binding = 6, rgba32f) uniform imageBuffer out_neighbors;
 layout(binding = 7, rgba32f) uniform imageBuffer out_data;
 
+layout(binding = 8) buffer ComputeStorage {
+  uint step_counters[2];
+} shared_storage;
+
 const float pi = 3.141592;
 
 // Noise functions
@@ -362,5 +366,8 @@ void main() {
   imageStore(out_vel, id, out_node.vel);
   imageStore(out_neighbors, id, out_node.neighbors);
   imageStore(out_data, id, out_node.data);
+
+  shared_storage.step_counters[0] = 1;
+  shared_storage.step_counters[1] = 2;
 }
 

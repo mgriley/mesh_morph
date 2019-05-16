@@ -699,9 +699,9 @@ void setup_render_desc_set_layout(AppState& state) {
 void setup_compute_desc_set_layout(AppState& state) {
   // TODO - add in the bindings for the shared shader storage
 
+  vector<VkDescriptorSetLayoutBinding> bindings;
   // we need a texel buffer for each input attr and a buffer
   // for each output attribute
-  vector<VkDescriptorSetLayoutBinding> bindings;
   for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
     VkDescriptorSetLayoutBinding binding = {
       .binding = i,
@@ -712,6 +712,16 @@ void setup_compute_desc_set_layout(AppState& state) {
     };
     bindings.push_back(binding);
   }
+  // shared storage buffer
+  VkDescriptorSetLayoutBinding storage_binding = {
+    .binding = 2 * ATTRIBUTES_COUNT,
+    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    .descriptorCount = 1,
+    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+    .pImmutableSamplers = nullptr
+  };
+  bindings.push_back(storage_binding);
+
   VkDescriptorSetLayoutCreateInfo layout_info = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
     .bindingCount = (uint32_t) bindings.size(),
@@ -1188,6 +1198,7 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
   assert(res == VK_SUCCESS);
  
   vector<VkWriteDescriptorSet> writes;
+  // the writes for the bindings to the texel buffers
   for (uint32_t i = 0; i < 2 * ATTRIBUTES_COUNT; ++i) {
     VkBufferView& buf_view = i < ATTRIBUTES_COUNT ?
       buf_state.vert_buffer_views[i] :
@@ -1204,6 +1215,23 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
     };
     writes.push_back(write);
   }
+  // the write for the shared storage buffer
+  VkDescriptorBufferInfo storage_buffer_info = {
+    .buffer = state.compute_storage_buffer,
+    .offset = 0,
+    .range = VK_WHOLE_SIZE
+  };
+  VkWriteDescriptorSet compute_storage_write = {
+    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    .dstSet = buf_state.compute_desc_set,
+    .dstBinding = 2 * ATTRIBUTES_COUNT,
+    .dstArrayElement = 0,
+    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    .descriptorCount = 1,
+    .pBufferInfo = &storage_buffer_info
+  };
+  writes.push_back(compute_storage_write);
+
   vkUpdateDescriptorSets(state.device, (uint32_t) writes.size(),
       writes.data(), 0, nullptr);
 }
@@ -1220,6 +1248,18 @@ void setup_buffer_states(AppState& state) {
   for (int i = 0; i < state.buffer_states.size(); ++i) {
     setup_buffer_state_desc_sets(state, i);
   }
+}
+
+void setup_compute_storage_buffer(AppState& state) {
+  VkDeviceSize buffer_size = sizeof(ComputeStorage);
+  create_buffer(state.device, state.phys_device,
+      buffer_size,
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      state.compute_storage_buffer, state.compute_storage_buffer_mem);
 }
 
 // TODO - remove
@@ -1311,6 +1351,16 @@ void copy_data_to_buffer(AppState& state, StagingBuf& staging,
   copy_buffer(state, staging.buf, dst_buffer, buffer_size);
 }
 
+void copy_data_from_buffer(AppState& state, StagingBuf& staging,
+    void* dst_data, uint32_t buffer_size, VkBuffer& src_buffer) {
+  copy_buffer(state, src_buffer, staging.buf, buffer_size);
+  void* staging_data;
+  vkMapMemory(state.device, staging.mem,
+      0, buffer_size, 0, &staging_data);
+  memcpy(dst_data, staging_data, (size_t) buffer_size);
+  vkUnmapMemory(state.device, staging.mem);
+}
+
 void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   uint32_t node_count = node_vecs.pos_vec.size();
   assert(node_count < MAX_NUM_VERTICES);
@@ -1340,18 +1390,11 @@ MorphNodes read_nodes_from_buffers(AppState& state, uint32_t buf_index) {
   VkDeviceSize buffer_size = sizeof(vec4) * state.node_count;
 
   StagingBuf staging(state, buffer_size);
-
   vector<void*> copy_dsts = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
-    copy_buffer(state, buf_state.vert_buffers[i],
-        staging.buf, buffer_size);
-    void* data;
-    vkMapMemory(state.device, staging.mem,
-        0, buffer_size, 0, &data);
-    memcpy(copy_dsts[i], data, (size_t) buffer_size);
-    vkUnmapMemory(state.device, staging.mem);
+    copy_data_from_buffer(state, staging, copy_dsts[i],
+        buffer_size, buf_state.vert_buffers[i]);
   }
-
   staging.cleanup(state);
 
   return node_vecs;
@@ -1606,6 +1649,7 @@ void init_vulkan(AppState& state) {
   setup_compute_pipeline(state);
 
   setup_descriptor_pool(state);
+  setup_compute_storage_buffer(state);
   setup_buffer_states(state);
 
   setup_command_buffers(state);
@@ -1862,8 +1906,34 @@ void set_initial_sim_data(AppState& state) {
   write_nodes_to_buffers(state, node_vecs);
 }
 
+void log_compute_storage(ComputeStorage& cs) {
+  printf("ctr0 %4d, ctr1 %4d\n",
+      cs.step_counters[0], cs.step_counters[1]);
+}
+
+void write_to_compute_storage(AppState& state,
+    ComputeStorage& compute_storage) {
+  StagingBuf staging(state, sizeof(ComputeStorage));
+  copy_data_to_buffer(state, staging, &compute_storage,
+      sizeof(compute_storage), state.compute_storage_buffer);
+  staging.cleanup(state);
+}
+
+ComputeStorage read_from_compute_storage(AppState& state) {
+  ComputeStorage compute_storage;
+  StagingBuf staging(state, sizeof(compute_storage));
+  copy_data_from_buffer(state, staging, &compute_storage,
+      sizeof(compute_storage), state.compute_storage_buffer);
+  staging.cleanup(state);
+  return compute_storage;
+}
+
 void dispatch_simulation(AppState& state) {
-  
+
+  // init shared storage
+  ComputeStorage in_compute_storage;
+  write_to_compute_storage(state, in_compute_storage);
+ 
   VkCommandBuffer tmp_buffer = begin_single_time_commands(state);
 
   VkMemoryBarrier mem_barrier = {
@@ -1908,6 +1978,19 @@ void dispatch_simulation(AppState& state) {
   state.result_buffer = num_iters & 1;
 
   end_single_time_commands(state, tmp_buffer);
+
+  // debug logging
+
+  if (state.controls.log_input_compute_storage) {
+    printf("input compute storage:\n");
+    log_compute_storage(in_compute_storage);
+  }
+  if (state.controls.log_output_compute_storage) {
+    printf("output compute storage:\n");
+    ComputeStorage out_compute_storage =
+      read_from_compute_storage(state);
+    log_compute_storage(out_compute_storage);
+  }
 }
 
 void run_simulation_pipeline(AppState& state) { 
@@ -2154,26 +2237,30 @@ void create_ui(AppState& state) {
     run_simulation_pipeline(state);
   }
 
+  vector<pair<string, bool*>> log_controls = {
+    {"input nodes", &controls.log_input_nodes},
+    {"output nodes", &controls.log_output_nodes},
+    {"point indices", &controls.log_point_indices},
+    {"line indices", &controls.log_line_indices},
+    {"triangle indices", &controls.log_triangle_indices},
+    {"input compute storage", &controls.log_input_compute_storage},
+    {"output compute storage", &controls.log_output_compute_storage},
+    {"durations", &controls.log_durations},
+  };
   ImGui::Separator();
   ImGui::Text("debug");
   ImGui::Text("Note that logging will not occur while animating");
-  ImGui::Checkbox("log input nodes", &controls.log_input_nodes);
-  ImGui::Checkbox("log output nodes", &controls.log_output_nodes);
-  ImGui::Checkbox("log point indices", &controls.log_point_indices);
-  ImGui::Checkbox("log line indices", &controls.log_line_indices);
-  ImGui::Checkbox("log triangle indices", &controls.log_triangle_indices);
-  ImGui::Checkbox("log durations", &controls.log_durations);
+  for (auto& log_con : log_controls) {
+    string log_msg = string("log ") + log_con.first;
+    ImGui::Checkbox(log_msg.c_str(), log_con.second);
+
+    // turn off logging while animating, the IO becomes a bottleneck
+    if (controls.animating_sim) {
+      *log_con.second = false;
+    }
+  }
   if (ImGui::Button("log buffers")) {
     log_buffers(state);
-  }
-  // do not log while animating, the IO becomes a bottleneck
-  if (controls.animating_sim) {
-    controls.log_input_nodes = false;
-    controls.log_output_nodes = false;
-    controls.log_point_indices = false;
-    controls.log_line_indices = false;
-    controls.log_triangle_indices = false;
-    controls.log_durations = false;
   }
 
   ImGui::Separator();

@@ -119,6 +119,10 @@ void set_user_unif_vals(const vector<UserUnif>& user_unifs,
   }
 }
 
+ComputeStorage::ComputeStorage()
+{
+}
+
 RenderPushConstants::RenderPushConstants(mat4 model, mat4 view,
     mat4 proj, const vector<UserUnif>& user_unifs) :
   model(model), view(view), proj(proj)

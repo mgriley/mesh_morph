@@ -46,6 +46,8 @@ struct Controls {
   // simulation
   bool log_input_nodes = false;
   bool log_output_nodes = false;
+  bool log_input_compute_storage = false;
+  bool log_output_compute_storage = false;
   bool log_point_indices = false;
   bool log_line_indices = false;
   bool log_triangle_indices = false;
@@ -76,6 +78,12 @@ struct UserUnif {
   UserUnif(string name, int num_comps,
       vec4 def_val, float min_val, float max_val,
       float drag_speed);
+};
+
+struct ComputeStorage {
+  array<uint32_t, 2> step_counters = {0, 0};
+
+  ComputeStorage();
 };
 
 struct RenderPushConstants {
@@ -140,6 +148,9 @@ struct AppState {
   int result_buffer = 0;
   // number of vertices currently in the vertex buffers
   uint32_t node_count = 0;
+
+  VkBuffer compute_storage_buffer;
+  VkDeviceMemory compute_storage_buffer_mem;
 
   Camera cam;
   Controls controls;
