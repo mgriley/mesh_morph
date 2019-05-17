@@ -45,6 +45,9 @@ vector<char> read_file(const string& filename) {
   return buffer;
 }
 
+// Parse the GLSL for user uniforms
+// Returns an empty vec if there are no unifs.
+// If an error occurs while parsing, return only those unifs parsed so far.
 vector<UserUnif> parse_user_unifs(const string& shader_text) {
   vector<UserUnif> unifs;
 
@@ -79,14 +82,20 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
           " // comps %d min %f max %f speed %f def %f %f %f %f",
           &num_comps, &min_val, &max_val, &drag_speed,
           &def_val[0], &def_val[1], &def_val[2], &def_val[3]);
-      assert(num_matches >= 1);
+      if (num_matches < 1) {
+        printf("Error while parsing user unif comment line.\n");
+        break;
+      }
       s = strchr(s, '\n') + 1;
 
       // Note: name will actually include the ; char in this case
       char name[100];
       num_matches = sscanf(s,
         " vec4 %s;", name);
-      assert(num_matches == 1);
+      if (num_matches != 1) {
+        printf("Error while parsing user unif decl line.\n");
+        break;
+      }
       s = strchr(s, '\n') + 1;
 
       UserUnif unif(name, num_comps, def_val,
@@ -98,12 +107,14 @@ vector<UserUnif> parse_user_unifs(const string& shader_text) {
 }
 
 /*
-   Return spirv text and parses any user uniforms
+   Returns true on success, false on error.
+   If success, out_spirv and out_unifs will be set.
 */
-vector<uint32_t> process_shader_file(
+bool process_shader_file(
     const string& src_name,
     const string& filename,
     shaderc_shader_kind kind,
+    vector<uint32_t>& out_spirv,
     vector<UserUnif>& out_unifs) {
   using namespace shaderc;
   Compiler compiler;
@@ -116,11 +127,11 @@ vector<uint32_t> process_shader_file(
       glsl_source, kind, src_name.c_str(), compile_options);
   if (res.GetCompilationStatus() != shaderc_compilation_status_success) {
     printf("Compilation error:\n%s\n", res.GetErrorMessage().c_str());
-    return vector<uint32_t>();
+    return false;
   }
+  out_spirv = vector<uint32_t>(res.cbegin(), res.cend());
   out_unifs = parse_user_unifs(glsl_source);
-
-  return vector<uint32_t>(res.cbegin(), res.cend());
+  return true;
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL vulkan_debug_callback(
@@ -739,15 +750,19 @@ void setup_desc_set_layouts(AppState& state) {
 
 void setup_graphics_pipelines(AppState& state) {
   vector<UserUnif> vertex_unifs, frag_unifs;
-  auto vert_shader_code = process_shader_file(
+  vector<uint32_t> vert_shader_code, frag_shader_code;
+  bool vert_res = process_shader_file(
       "vertex shader", "../shaders/basic.vert",
-      shaderc_glsl_vertex_shader, vertex_unifs);
-  auto frag_shader_code = process_shader_file(
+      shaderc_glsl_vertex_shader, vert_shader_code, vertex_unifs);
+  assert(vert_res);
+  bool frag_res = process_shader_file(
       "frag shader", "../shaders/basic.frag",
-      shaderc_glsl_fragment_shader, frag_unifs);
+      shaderc_glsl_fragment_shader, frag_shader_code, frag_unifs);
+  assert(frag_res);
+    
   VkShaderModule vert_module = create_shader_module(state.device, vert_shader_code);
   VkShaderModule frag_module = create_shader_module(state.device, frag_shader_code);
-  // TODO - add on the frag unifs?
+  // Note: frag unifs are not used right now
   state.render_unifs = std::move(vertex_unifs);
 
   VkPipelineShaderStageCreateInfo vert_stage_info = {
@@ -904,9 +919,18 @@ void setup_graphics_pipelines(AppState& state) {
 }
 
 void setup_compute_pipeline(AppState& state) {
-  auto shader_code = process_shader_file(
+  vector<uint32_t> shader_code;
+  bool shader_res = process_shader_file(
       "compute shader", "../shaders/morph.comp",
-      shaderc_glsl_compute_shader, state.compute_unifs);
+      shaderc_glsl_compute_shader, shader_code, state.compute_unifs);
+  // If it does not compile, use a default shader until the problem is fixed
+  if (!shader_res) {
+    printf("Defaulting to shaders/basic.comp\n");
+    shader_res = process_shader_file(
+        "default compute shader", "../shaders/basic.comp",
+        shaderc_glsl_compute_shader, shader_code, state.compute_unifs);
+    assert(shader_res);
+  }
   VkShaderModule shader_module = create_shader_module(
       state.device, shader_code);
 
