@@ -3,7 +3,8 @@
 #include "utils.h"
 
 const int MAX_NUM_USER_UNIFS = 100;
-const uint32_t STORAGE_QUEUE_LEN = 1*1000; 
+// TODO - increase later
+const uint32_t STORAGE_QUEUE_LEN = 10;//1*1000; 
 
 class AppState;
 
@@ -42,7 +43,7 @@ struct Controls {
 
   // rendering
   array<bool, PIPELINES_COUNT> pipeline_toggles =
-    {true, false, false};
+    {true, true, false};
 
   // simulation
   bool log_input_nodes = false;
@@ -87,7 +88,7 @@ struct ComputeStorage {
   // for circular buffer queue
   array<uint32_t, 2> start_ptrs = {0, 0};
   array<uint32_t, 2> end_ptrs = {0, 0};
-  array<uint32_t, STORAGE_QUEUE_LEN> queue_mem;
+  array<uint32_t, STORAGE_QUEUE_LEN> queue_mem = {0};
 
   ComputeStorage();
 };

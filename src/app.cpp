@@ -1907,9 +1907,23 @@ void set_initial_sim_data(AppState& state) {
 }
 
 void log_compute_storage(ComputeStorage& cs) {
-  printf("ctr0 %4d, ctr1 %4d\npayload: %4d\n",
+  printf(
+      "ctr0 %4d, ctr1 %4d\n"
+      "start0 %4d, end0 %4d\n"
+      "start1 %4d, end1 %4d\n",
       cs.step_counters[0], cs.step_counters[1],
-      cs.payload);
+      cs.start_ptrs[0], cs.end_ptrs[0],
+      cs.start_ptrs[1], cs.end_ptrs[1]);
+  printf("queue mem:\n");
+  uint32_t q_len = cs.queue_mem.size();
+  for (uint32_t i = 0; i < cs.queue_mem.size(); ++i) {
+    printf("(%2s %2s %2s %2s) %4d: %4d\n",
+        cs.start_ptrs[0] % q_len == i ? "s0" : "",
+        cs.end_ptrs[0] % q_len == i ? "e0" : "",
+        cs.start_ptrs[1] % q_len == i ? "s1" : "",
+        cs.end_ptrs[1] % q_len == i ? "e1" : "",
+        i, cs.queue_mem[i]);
+  }
 }
 
 void write_to_compute_storage(AppState& state,
@@ -1929,10 +1943,17 @@ ComputeStorage read_from_compute_storage(AppState& state) {
   return compute_storage;
 }
 
+void setup_test_queue(ComputeStorage& cs) {
+  cs.queue_mem = {1, 2, 3};
+  cs.start_ptrs = {0, 0};
+  cs.end_ptrs = {3, 3};
+}
+
 void dispatch_simulation(AppState& state) {
 
   // init shared storage
   ComputeStorage in_compute_storage;
+  setup_test_queue(in_compute_storage);
   write_to_compute_storage(state, in_compute_storage);
  
   VkCommandBuffer tmp_buffer = begin_single_time_commands(state);
@@ -1969,10 +1990,10 @@ void dispatch_simulation(AppState& state) {
         0, nullptr);
 
     ComputePushConstants push_consts(
-        state.node_count, i,
+        state.node_count, i, STORAGE_QUEUE_LEN,
         state.compute_unifs);
     vkCmdPushConstants(tmp_buffer, state.compute_pipeline_layout,
-        VK_SHADER_STAGE_COMPUTE_BIT, 0, STORAGE_QUEUE_LEN,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, 
         sizeof(ComputePushConstants), &push_consts);
 
     uint32_t groups_x = state.node_count / LOCAL_WORKGROUP_SIZE + 1;

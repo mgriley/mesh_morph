@@ -1,6 +1,27 @@
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
+/*
+Notes:
+
+Queue:
+
+The queue should guarantee that for any successful pop, no other
+invocation will access that cell in the queue during this iteration.
+Across iterations there is no such guarantee.
+The "winning" invocation becomes the owner of the value in that
+queue cell.
+
+start_ptr[cur_index] points to the first available cell (or
+to end_ptr[cur_index] if no cells are available).
+end_ptr[cur_index] points one past the last used cell (or to 
+start_ptr[cur_index] if no cells are available). This is an 
+empty cell unless the queue is full.
+
+Note that the ptrs should only ever be incremented.
+Renormalizing them (mod queue_len) would break invariants.
+*/
+
 // the workgroup x size is a specialization constant
 layout (local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
 
@@ -352,7 +373,7 @@ Node test_step(Node in_node) {
   return out_node;
 }
 
-bool push_index(uint index, out uint res) {
+bool push_value(uint val) {
   uint cur_index = unif.iter_num & 1;
   uint next_index = (unif.iter_num + 1) & 1;
 
@@ -360,13 +381,13 @@ bool push_index(uint index, out uint res) {
   uint orig_ptr = atomicAdd(
     store.end_ptrs[next_index], 1);
   if (orig_ptr - start_ptr + 1 <= unif.queue_len) {
-    res = orig_ptr % unif.queue_len;
+    store.queue_mem[orig_ptr % unif.queue_len] = val;
     return true;
   }
   return false;
 }
 
-bool pop_index(out uint res) {
+bool pop_value(out uint res) {
   uint cur_index = unif.iter_num & 1;
   uint next_index = (unif.iter_num + 1) & 1;
 
@@ -374,7 +395,7 @@ bool pop_index(out uint res) {
   uint orig_ptr = atomicAdd(
     store.start_ptrs[next_index], 1);
   if (orig_ptr < end_ptr) {
-    res = orig_ptr % unif.queue_len;  
+    res = store.queue_mem[orig_ptr % unif.queue_len];  
     return true;
   }
   return false;
@@ -391,17 +412,32 @@ void exclusive_step() {
   uint cur_index = unif.iter_num & 1;
   uint next_index = (unif.iter_num + 1) & 1;
   
-  // TODO - be very careful here, what happens if they hit
-  // the limits (edge cases for empty queue and full queue) ?
   // Note: are atomics really necessary here?
-  atomicMax(store.start_ptrs[next_index],
+  atomicMin(store.start_ptrs[next_index],
     store.end_ptrs[cur_index]);
-  atomicMax(store.end_ptrs[next_index],
+  atomicMin(store.end_ptrs[next_index],
     store.start_ptrs[cur_index] + unif.queue_len);
   atomicExchange(store.start_ptrs[cur_index],
     store.start_ptrs[next_index]);
   atomicExchange(store.end_ptrs[cur_index],
     store.end_ptrs[next_index]);
+}
+
+void test_queue() {
+  int id = id();
+  if (id == 0 || id == 1 || id == 2 || id == 3) {
+    uint val;
+    bool res = pop_value(val);
+    if (res) {
+      imageStore(out_pos, id, vec4(float(val)));
+    }
+    push_value(uint(id));
+  }
+  /*
+  if (id == 0) {
+    bool res = push_value(7);
+  }
+  */
 }
 
 void main() {
@@ -423,6 +459,8 @@ void main() {
   imageStore(out_vel, id, out_node.vel);
   imageStore(out_neighbors, id, out_node.neighbors);
   imageStore(out_data, id, out_node.data);
+
+  test_queue();
 
   // increment the current counter, and perform an exclusive step if
   // we are the last node to get here. 
