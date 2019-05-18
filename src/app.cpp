@@ -20,7 +20,7 @@
 #include <fstream>
 #include <cstring>
 
-const uint32_t MAX_NUM_VERTICES = (int) 1e6;
+const uint32_t MAX_NUM_VERTICES = 16*1000;
 const uint32_t MAX_NUM_INDICES = (int) 1e6;
 
 const uint32_t LOCAL_WORKGROUP_SIZE = 256;
@@ -446,6 +446,34 @@ void setup_surface(AppState& state) {
   assert(res == VK_SUCCESS);
 }
 
+#define PLIMIT(limits, limit_name, format) printf("%-30s " format "\n", #limit_name, limits.limit_name)
+#define PLIMITU(limits, limit_name) printf("%-30s %20u\n", #limit_name, limits.limit_name)
+
+void log_device_properties(VkPhysicalDevice& device) {
+  VkPhysicalDeviceProperties props;
+  vkGetPhysicalDeviceProperties(device, &props);
+  
+  VkPhysicalDeviceLimits& limits = props.limits;
+  printf("Device Limits:\n");
+  PLIMITU(limits, maxImageDimension1D);
+  PLIMITU(limits, maxTexelBufferElements);
+  PLIMITU(limits, maxStorageBufferRange);
+  PLIMITU(limits, maxPushConstantsSize);
+  PLIMITU(limits, maxMemoryAllocationCount);
+  PLIMITU(limits, maxComputeSharedMemorySize);
+  PLIMITU(limits, maxComputeWorkGroupCount[0]);
+  PLIMITU(limits, maxComputeWorkGroupCount[1]);
+  PLIMITU(limits, maxComputeWorkGroupCount[2]);
+  PLIMITU(limits, maxComputeWorkGroupInvocations);
+  PLIMITU(limits, maxComputeWorkGroupSize[0]);
+  PLIMITU(limits, maxComputeWorkGroupSize[1]);
+  PLIMITU(limits, maxComputeWorkGroupSize[2]);
+  PLIMITU(limits, maxDrawIndexedIndexValue);
+  PLIMITU(limits, maxFramebufferWidth);
+  PLIMITU(limits, maxFramebufferHeight);
+  printf("\n");
+}
+
 void setup_physical_device(AppState& state) {
   // retrieve physical device
   // assume the first GPU will do
@@ -453,6 +481,8 @@ void setup_physical_device(AppState& state) {
   VkResult res = vkEnumeratePhysicalDevices(state.inst, &device_count,
       &state.phys_device);
   assert(!res && device_count == 1);
+
+  log_device_properties(state.phys_device);
 }
 
 void setup_logical_device(AppState& state) {
@@ -708,7 +738,6 @@ void setup_render_desc_set_layout(AppState& state) {
 }
 
 void setup_compute_desc_set_layout(AppState& state) {
-  // TODO - add in the bindings for the shared shader storage
 
   vector<VkDescriptorSetLayoutBinding> bindings;
   // we need a texel buffer for each input attr and a buffer
@@ -1153,6 +1182,9 @@ void setup_depth_resources(AppState& state) {
 void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
   BufferState& buf_state = state.buffer_states[buf_index];
 
+  // TODO - left off here. Verify tht the buffer is of the correct
+  // size and the buffer view, too!
+
   VkDeviceSize buffer_size = sizeof(vec4) * MAX_NUM_VERTICES;
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
     create_buffer(state.device, state.phys_device,
@@ -1325,7 +1357,7 @@ void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
 void setup_index_buffers(AppState& state) {
   for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
     create_buffer(state.device, state.phys_device,
-        sizeof(uint16_t) * MAX_NUM_INDICES,
+        sizeof(uint32_t) * MAX_NUM_INDICES,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
           VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -1493,7 +1525,7 @@ void record_render_pass(AppState& state, uint32_t buffer_index) {
     vkCmdBindVertexBuffers(state.cmd_buffers[i], 0, vert_buffers.size(),
         vert_buffers.data(), byte_offsets.data());
     vkCmdBindIndexBuffer(state.cmd_buffers[i],
-        state.index_buffers[pipeline_index], 0, VK_INDEX_TYPE_UINT16);
+        state.index_buffers[pipeline_index], 0, VK_INDEX_TYPE_UINT32);
     vkCmdBindDescriptorSets(state.cmd_buffers[i],
         VK_PIPELINE_BIND_POINT_GRAPHICS,
         state.render_pipeline_layout, 0, 1,
@@ -1596,6 +1628,8 @@ void cleanup_vulkan(AppState& state) {
     vkDestroyBuffer(state.device, state.index_buffers[i], nullptr);
     vkFreeMemory(state.device, state.index_buffer_mems[i], nullptr);
   }
+  vkDestroyBuffer(state.device, state.compute_storage_buffer, nullptr);
+  vkFreeMemory(state.device, state.compute_storage_buffer_mem, nullptr);
 
   for (int i = 0; i < max_frames_in_flight; ++i) {
     vkDestroySemaphore(state.device, state.render_done_semas[i], nullptr);
@@ -1816,7 +1850,7 @@ void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes) {
   out_nodes = std::move(vertex_nodes);
 }
 
-using IndexPair = std::pair<uint16_t, uint16_t>;
+using IndexPair = std::pair<uint32_t, uint32_t>;
 
 struct IndexPairHash {
 	size_t operator()(const IndexPair& pair) const {
@@ -1827,18 +1861,18 @@ struct IndexPairHash {
 	}
 };
 
-vector<uint16_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
+vector<uint32_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
   // TODO - faces is harder than one might think, defer
   // Points and lines is sufficient for visualization
-  vector<uint16_t> indices;
+  vector<uint32_t> indices;
   return indices;
 }
 
-vector<uint16_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
+vector<uint32_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
 
   // add a line for every valid edge
   // use a set of edges to prevent duplicates
-  vector<uint16_t> indices;
+  vector<uint32_t> indices;
   uint32_t node_count = node_vecs.pos_vec.size();
   unordered_set<IndexPair, IndexPairHash> edge_set;
   for (uint32_t i = 0; i < node_count; ++i) {
@@ -1860,9 +1894,9 @@ vector<uint16_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
   return indices;
 }
 
-vector<uint16_t> gen_point_indices(AppState& state, MorphNodes& node_vecs) {
+vector<uint32_t> gen_point_indices(AppState& state, MorphNodes& node_vecs) {
   uint32_t node_count = node_vecs.pos_vec.size();
-  vector<uint16_t> indices(node_count);
+  vector<uint32_t> indices(node_count);
   for (uint32_t i = 0; i < node_count; ++i) {
     indices[i] = i;
   }
@@ -1870,7 +1904,7 @@ vector<uint16_t> gen_point_indices(AppState& state, MorphNodes& node_vecs) {
 }
 
 void update_indices(AppState& state, MorphNodes& node_vecs) {
-  array<vector<uint16_t>, PIPELINES_COUNT> pipeline_indices = {
+  array<vector<uint32_t>, PIPELINES_COUNT> pipeline_indices = {
     gen_point_indices(state, node_vecs),
     gen_line_indices(state, node_vecs),
     gen_triangle_indices(state, node_vecs)
@@ -1889,7 +1923,7 @@ void update_indices(AppState& state, MorphNodes& node_vecs) {
     if (!should_print) {
       continue;
     }
-    vector<uint16_t>& indices = pipeline_indices[p_i];
+    vector<uint32_t>& indices = pipeline_indices[p_i];
     printf("\n%s indices (%lu):\n", label, indices.size());
     for (int i = 0; i < indices.size(); ++i) {
       printf("%s%4d ",
@@ -1900,7 +1934,7 @@ void update_indices(AppState& state, MorphNodes& node_vecs) {
 
   // copy the indices to their respective buffers
   for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
-    vector<uint16_t>& indices = pipeline_indices[i];
+    vector<uint32_t>& indices = pipeline_indices[i];
     if (indices.size() == 0) {
       continue;
     }
@@ -2023,9 +2057,9 @@ void dispatch_simulation(AppState& state) {
     uint32_t groups_x = state.node_count / LOCAL_WORKGROUP_SIZE + 1;
     vkCmdDispatch(tmp_buffer, groups_x, 1, 1);
   }
-  state.result_buffer = num_iters & 1;
-
   end_single_time_commands(state, tmp_buffer);
+
+  state.result_buffer = num_iters & 1;
 
   // debug logging
 

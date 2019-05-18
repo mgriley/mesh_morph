@@ -67,15 +67,15 @@ struct Node {
   vec4 data;
 };
 
-layout(binding = 0, rgba32f) uniform imageBuffer in_pos;
-layout(binding = 1, rgba32f) uniform imageBuffer in_vel;
-layout(binding = 2, rgba32f) uniform imageBuffer in_neighbors;
-layout(binding = 3, rgba32f) uniform imageBuffer in_data;
+layout(binding = 0, rgba32f) uniform readonly imageBuffer in_pos;
+layout(binding = 1, rgba32f) uniform readonly imageBuffer in_vel;
+layout(binding = 2, rgba32f) uniform readonly imageBuffer in_neighbors;
+layout(binding = 3, rgba32f) uniform readonly imageBuffer in_data;
 
-layout(binding = 4, rgba32f) uniform imageBuffer out_pos;
-layout(binding = 5, rgba32f) uniform imageBuffer out_vel;
-layout(binding = 6, rgba32f) uniform imageBuffer out_neighbors;
-layout(binding = 7, rgba32f) uniform imageBuffer out_data;
+layout(binding = 4, rgba32f) uniform writeonly imageBuffer out_pos;
+layout(binding = 5, rgba32f) uniform writeonly imageBuffer out_vel;
+layout(binding = 6, rgba32f) uniform writeonly imageBuffer out_neighbors;
+layout(binding = 7, rgba32f) uniform writeonly imageBuffer out_data;
 
 layout(binding = 8) buffer ComputeStorage {
   uint step_counters[2];
@@ -366,11 +366,14 @@ Node step(Node in_node) {
   return out_node;
 }
 
-// TODO - remove
 Node test_step(Node in_node) {
   Node out_node = in_node;
   out_node.pos += vec4(1.0,0.0,0.0,0.0);
   return out_node;
+}
+
+Node dummy_step(Node in_node) {
+  return in_node;
 }
 
 bool push_value(uint val) {
@@ -440,6 +443,17 @@ void test_queue() {
   */
 }
 
+// For debugging the imageStore to index >= 4096 issue
+void debug_main() {
+  int id = id();
+  int img_size = imageSize(out_pos);
+  imageStore(out_pos, id, vec4(float(img_size)));
+  if (id < unif.node_count) {
+    atomicAdd(store.step_counters[0], 1);
+    atomicMax(store.step_counters[1], id);
+  }
+}
+
 void main() {
   int id = int(gl_GlobalInvocationID.x); 
   if (id >= unif.node_count) {
@@ -460,7 +474,7 @@ void main() {
   imageStore(out_neighbors, id, out_node.neighbors);
   imageStore(out_data, id, out_node.data);
 
-  test_queue();
+  //test_queue();
 
   // increment the current counter, and perform an exclusive step if
   // we are the last node to get here. 
