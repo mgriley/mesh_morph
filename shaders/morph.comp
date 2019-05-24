@@ -379,15 +379,22 @@ bool pop_new_neighbors(out vec4 out_neighbors) {
   return true;
 }
 
+/*
+Note that it may be that a node is both a center of expansion
+and is adjacent to another center of expansion (thereby having messages
+for it along its edge that to node).
+Each center of expansion ignores the edge change requests b/c instead
+new nodes will be spliced in. However, those new nodes must check their
+outgoing edge (which is the edge opposite to the one that goes to the 
+center of expansion / parent) for messages, in the same way that all
+non-expanding nodes check for messages. This is handled in the step for 
+inactive nodes.
+*/
 void compute_topology_transition(Node in_node, out vec4 next_neighbors,
   out vec4 next_top_data) {
 
   next_neighbors = in_node.neighbors;
   next_top_data = in_node.top_data;
-
-  // TODO: - left off here. fix the algo to account for this
-  // Note: assume that the node will not be both a center
-  // for expansion and have edge requests from neighbors
 
   if (in_node.top_data.x != -2.0) {
     // this node in the center of an expansion. complete expansion
@@ -408,9 +415,9 @@ void compute_topology_transition(Node in_node, out vec4 next_neighbors,
     }
 
     // TODO - improve the condition.
-    // possibly expand about this node
-    // only expand source nodes
-    // do not expand nodes with fixed (-1.0) edges
+    // possibly expand about this node.
+    // Conditions: only expand source nodes
+    // and do not expand nodes with fixed (-1.0) edges
     bool is_interior_node = !any(equal(in_node.neighbors, vec4(-1.0)));
     if (in_node.vel.w != 0.0 && is_interior_node &&
       (unif.iter_num % 10 == 0)) {
@@ -514,10 +521,19 @@ Node step_inactive_node(Node in_node) {
     vec3 opposite_pos = imageLoad(in_pos, opposite_id).xyz;
     vec4 starting_pos = vec4(0.5 * (parent_pos + opposite_pos), 0.0);
 
+    // in case this node is adjacent to two expanding nodes, check
+    // for edge requests from the non-parent expanding node
+    vec4 neighbors = in_node.top_data;
+    vec4 opp_top_data = imageLoad(in_top_data, opposite_id);
+    float edge_request = opp_top_data[parent_n_id];
+    if (edge_request != -2.0) {
+      neighbors[(parent_n_id + 2) % 4] = edge_request;
+    }
+
     out_node = Node(
       starting_pos,
       vec4(0.0),
-      in_node.top_data,
+      neighbors,
       vec4(-1.0),
       vec4(-2.0));
   }
