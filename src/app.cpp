@@ -1572,9 +1572,6 @@ void record_render_pass(AppState& state, uint32_t buffer_index) {
         VK_SHADER_STAGE_VERTEX_BIT, 0,
         sizeof(RenderPushConstants), &push_consts);
 
-    // TODO - remove later
-    //vkCmdDraw(state.cmd_buffers[i], state.node_count, 1, 0, 0);
-
     vkCmdDrawIndexed(state.cmd_buffers[i], state.index_counts[pipeline_index],
         1, 0, 0, 0);
   }
@@ -1864,12 +1861,12 @@ int coord_to_index(ivec2 coord, ivec2 samples) {
 }
 
 // Outputs the nodes, for rendering
-void gen_morph_data(ivec2 samples, uint32_t reserve_node_count,
+void gen_morph_data(ivec2 samples, uint32_t inactive_node_count,
     vector<MorphNode>& out_nodes,
     vector<uint32_t>& out_queue_values) {
 
   vector<MorphNode> vertex_nodes;
-  vertex_nodes.reserve(samples[0] * samples[1] + reserve_node_count);
+  vertex_nodes.reserve(samples[0] * samples[1] + inactive_node_count);
   // generate active nodes
   for (int y = 0; y < samples[1]; ++y) {
     for (int x = 0; x < samples[0]; ++x) {
@@ -1884,18 +1881,19 @@ void gen_morph_data(ivec2 samples, uint32_t reserve_node_count,
           (float) right_neighbor, (float) upper_neighbor,
           (float) left_neighbor, (float) lower_neighbor);
 
-      MorphNode vert_node(vec4(pos, 0.0), vec4(0.0), neighbors,
-          vec4(0.0), vec4(0.0));
+      MorphNode vert_node(vec4(pos, 0.0),
+          vec4(0.0), neighbors,
+          vec4(-1.0), vec4(-2.0));
       vertex_nodes.push_back(vert_node);
     }
   }
   // generate nodes on reserve
   vector<uint32_t> queue_values;
-  queue_values.reserve(reserve_node_count);
-  for (int i = 0; i < reserve_node_count; ++i) {
+  queue_values.reserve(inactive_node_count);
+  for (int i = 0; i < inactive_node_count; ++i) {
     uint32_t next_index = vertex_nodes.size();
     MorphNode node(vec4(0.0), vec4(0.0), vec4(-2.0),
-        vec4(0.0), vec4(0.0));
+        vec4(-1.0), vec4(-2.0));
     vertex_nodes.push_back(node);
     queue_values.push_back(next_index);
   }
@@ -1930,6 +1928,10 @@ vector<uint32_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
   unordered_set<IndexPair, IndexPairHash> edge_set;
   for (uint32_t i = 0; i < node_count; ++i) {
     vec4 neighbors = node_vecs.neighbors_vec[i];  
+    // skip inactive nodes
+    if (neighbors[0] == -2.0) {
+      continue;
+    }
     for (int j = 0; j < 4; ++j) {
       int n_index = neighbors[j];
       if (n_index == -1.0) {
@@ -1948,10 +1950,13 @@ vector<uint32_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
 }
 
 vector<uint32_t> gen_point_indices(AppState& state, MorphNodes& node_vecs) {
+  // create a point for every active node
   uint32_t node_count = node_vecs.pos_vec.size();
-  vector<uint32_t> indices(node_count);
+  vector<uint32_t> indices;
   for (uint32_t i = 0; i < node_count; ++i) {
-    indices[i] = i;
+    if (node_vecs.neighbors_vec[i][0] != -2.0) {
+      indices.push_back(i);
+    }
   }
   return indices;
 }
@@ -2059,7 +2064,7 @@ void set_initial_sim_data(AppState& state) {
   ivec2 zygote_samples(state.controls.num_zygote_samples);
   vector<MorphNode> nodes;
   vector<uint32_t> cs_queue_mem;
-  gen_morph_data(zygote_samples, state.controls.reserve_node_count,
+  gen_morph_data(zygote_samples, state.controls.inactive_node_count,
       nodes, cs_queue_mem);
   MorphNodes node_vecs(nodes);
 
@@ -2162,7 +2167,8 @@ void dispatch_simulation(AppState& state) {
         0, nullptr);
 
     ComputePushConstants push_consts(
-        state.node_count, i, MAX_STORAGE_QUEUE_LEN,
+        state.node_count, state.controls.inactive_node_count,
+        i, MAX_STORAGE_QUEUE_LEN,
         state.compute_unifs);
     vkCmdPushConstants(tmp_buffer, state.compute_pipeline_layout,
         VK_SHADER_STAGE_COMPUTE_BIT, 0, 
@@ -2396,13 +2402,14 @@ void create_ui(AppState& state) {
   ImGui::Text("simulation controls:");
   ImGui::Text("init data:");
   ImGui::InputInt("AxA samples", &controls.num_zygote_samples);
-  ImGui::InputInt("reserve_node_count", &controls.reserve_node_count);
+  ImGui::InputInt("inactive_node_count", &controls.inactive_node_count);
   controls.num_zygote_samples = clamp(
       controls.num_zygote_samples, 2, (int) sqrt(MAX_NUM_VERTICES));
-  uint32_t max_num_reserve_nodes = MAX_NUM_VERTICES -
+  uint32_t max_num_inactive_nodes = MAX_NUM_VERTICES -
     (uint32_t) pow(controls.num_zygote_samples, 2);
-  controls.reserve_node_count = clamp(
-      controls.reserve_node_count, 0, (int) max_num_reserve_nodes);
+  max_num_inactive_nodes = std::min(max_num_inactive_nodes, MAX_STORAGE_QUEUE_LEN);
+  controls.inactive_node_count = clamp(
+      controls.inactive_node_count, 0, (int) max_num_inactive_nodes);
   
   ImGui::Text("simulation:"); 
   int max_iter_num = 1*1000*1000*1000;

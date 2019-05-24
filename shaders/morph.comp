@@ -4,6 +4,14 @@
 /*
 Notes:
 
+Node state:
+
+A node is inactive if neighbors[i] == -2.0, and an active
+node has neighbors[i] != -2.0. Ow undefined.
+
+A node has a topology change message if top_data[i] != -2.0, and
+a node with no message has top_data[i] == -2.0. Ow undefined.
+
 Queue:
 
 The queue should guarantee that for any successful pop, no other
@@ -26,13 +34,21 @@ Renormalizing them (mod queue_len) would break invariants.
 layout (local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform Unifs {
+  // node_count includes active and inactive nodes
   uint node_count;
+  uint inactive_node_count;
   uint iter_num;
   uint queue_len;
 
 // BEGIN_USER_UNIFS
-  // comps 1 min 0.0 max 1.0 speed 1.0 def 0.0
-  vec4 fix_positions;
+  // comps 1 min 0.0 max 1.0 speed 1.0 def 1.0
+  vec4 pos_step_active;
+  // comps 1 min 0.0 max 1.0 speed 1.0 def 1.0
+  vec4 heat_step_active;
+  // comps 1 min 0.0 max 1.0 speed 1.0 def 1.0
+  vec4 source_step_active;
+  // comps 1 min 0.0 max 1.0 speed 1.0 def 1.0
+  vec4 top_step_active;
   // comps 1 min 0.0 max 1.0 speed 0.001 def 0.5
   vec4 norm_src_pos;
   // comps 3 min -1.0 max 1.0 speed 0.001 def 0.0 1.0 0.0
@@ -152,21 +168,17 @@ bool pop_value(out uint res) {
 }
 
 Node run_init_step(Node in_node) {
-  int side_len = int(sqrt(unif.node_count));
-  int target_src_id = int(unif.node_count *
+  uint active_node_count = unif.node_count - unif.inactive_node_count;
+  int side_len = int(sqrt(active_node_count));
+  int target_src_id = int(active_node_count *
     unif.norm_src_pos.x + 0.5 * side_len);
-  vec4 out_vel = vec4(0.0);
+  vec4 vel = vec4(0.0);
   if (id() == target_src_id) {
-    out_vel = vec4(normalize(unif.init_src_dir.xyz),
+    vel = vec4(normalize(unif.init_src_dir.xyz),
       unif.src_heat_gen_rate.x);
   }
-  Node out_node = {
-    vec4(in_node.pos.xyz, 0.0),
-    out_vel,
-    in_node.neighbors,
-    vec4(-1.0),
-    vec4(-2.0)
-  };
+  Node out_node = in_node;
+  out_node.vel = vel;
   return out_node;
 }
 
@@ -347,40 +359,37 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
 }
 
 /*
+Pop the indices of four inactive nodes to use as neighbors during expansion.
 Returns true iff success.
 */
-bool pop_new_neighbors(vec4 cur_neighbors, out vec4 out_neighbors) {
-  // If cannot pop all that are required, free anything we have already popped
+bool pop_new_neighbors(out vec4 out_neighbors) {
+  // If cannot pop all that are required, attempt to free anything we have already popped
   for (int i = 0; i < 4; ++i) {
-    if (cur_neighbors[i] == -1.0) {
-      out_neighbors[i] = -1.0;
-    } else {
-      uint val = 0;
-      if (!pop_value(val)) {
-        for (int j = 0; j < i; ++j) {
-          if (out_neighbors[j] != -1.0) {
-            push_value(uint(out_neighbors[j]));
-          }
+    uint val = 0;
+    if (!pop_value(val)) {
+      for (int j = 0; j < i; ++j) {
+        if (out_neighbors[j] != -1.0) {
+          push_value(uint(out_neighbors[j]));
         }
-        return false;
       }
-      out_neighbors[i] = float(val);
+      return false;
     }
+    out_neighbors[i] = float(val);
   }
   return true;
 }
 
-void compute_topology_transition(Node in_node, out vec4 out_neighbors,
-  out vec4 out_top_data) {
+void compute_topology_transition(Node in_node, out vec4 next_neighbors,
+  out vec4 next_top_data) {
 
-  vec4 next_neighbors = in_node.neighbors;
-  vec4 next_top_data = in_node.top_data;
+  next_neighbors = in_node.neighbors;
+  next_top_data = in_node.top_data;
 
   // TODO: - left off here. fix the algo to account for this
   // Note: assume that the node will not be both a center
   // for expansion and have edge requests from neighbors
 
-  if (in_node.top_data.w != -2.0) {
+  if (in_node.top_data.x != -2.0) {
     // this node in the center of an expansion. complete expansion
     next_neighbors = in_node.top_data;
     next_top_data = vec4(-2.0);
@@ -398,38 +407,38 @@ void compute_topology_transition(Node in_node, out vec4 out_neighbors,
       }
     }
 
+    // TODO - improve the condition.
     // possibly expand about this node
-    // TODO - left off here. find a suitable condition.
-    // pref only expand about src nodes (and perhaps straining ones)
-    // but for now try only source nodes
-    /*
-    if (true) {
+    // only expand source nodes
+    // do not expand nodes with fixed (-1.0) edges
+    bool is_interior_node = !any(equal(in_node.neighbors, vec4(-1.0)));
+    if (in_node.vel.w != 0.0 && is_interior_node &&
+      (unif.iter_num % 10 == 0)) {
       // get the indices of four reserved nodes
       vec4 n_indices = vec4(0.0);
-      if (pop_new_neighbors(in_node.neighbors, n_indices)) {
+      if (pop_new_neighbors(n_indices)) {
         next_top_data = n_indices;
 
         // setup the reserved node so that
         // it will splice itself into the mesh on the next iter
         // (b/w this node and our current neighbors)
         for (int i = 0; i < 4; ++i) {
-          if (n_indices[i] == -1.0) {
-            continue;
-          }
           vec4 splice_neighbors = vec4(0.0);
           splice_neighbors[i] = in_node.neighbors[i];
           splice_neighbors[(i + 1) % 4] = n_indices[(i + 1) % 4];
           splice_neighbors[(i + 2) % 4] = id();
           splice_neighbors[(i + 3) % 4] = n_indices[(i + 3) % 4];
-          imageStore(out_top_data, n_indices[i], splice_neighbors);
+          // store its neighbors into top_data
+          imageStore(out_top_data, int(n_indices[i]), splice_neighbors);
+          // store the edge of the central node into data.x
+          // this is used to compute the starting position
+          int parent_edge_index = (i + 2) % 4;
+          imageStore(out_data, int(n_indices[i]),
+            vec4(float(parent_edge_index), 0.0, 0.0, 0.0));
         }
       }
     }
-    */
   }
-  
-  out_neighbors = next_neighbors;
-  out_top_data = next_top_data;
 }
 
 vec3 compute_next_pos(Node in_node) {
@@ -474,33 +483,27 @@ vec3 compute_next_pos(Node in_node) {
 }
 
 Node step_active_node(Node in_node) {
-  vec3 next_pos = compute_next_pos(in_node);
-  float next_heat = compute_next_heat(in_node);
-  vec4 next_vel = vec4(0.0);
-  vec4 next_data = vec4(0.0);
-  compute_source_transition(in_node, next_vel, next_data);
-
-  vec4 next_neighbors = vec4(0.0);
-  vec4 next_top_data = vec4(0.0);
-  compute_topology_transition(in_node, next_neighbors, next_top_data);
-
-  if (int(unif.fix_positions.x) == 1.0) {
-    next_pos = in_node.pos.xyz;
+  Node out_node = in_node;
+  if (int(unif.pos_step_active.x) == 1.0) {
+    out_node.pos.xyz = compute_next_pos(in_node);
   }
-
-  Node out_node = {
-    vec4(next_pos, next_heat),
-    next_vel,
-    next_neighbors,
-    next_data,
-    next_top_data,
-  };
+  if (int(unif.heat_step_active.x) == 1.0) {
+    out_node.pos.w = compute_next_heat(in_node);
+  }
+  if (int(unif.source_step_active.x) == 1.0) {
+    compute_source_transition(in_node, out_node.vel, out_node.data);
+  }
+  if (int(unif.top_step_active.x) == 1.0) {
+    compute_topology_transition(in_node,
+      out_node.neighbors, out_node.top_data);
+  }
+  
   return out_node;
 }
 
 Node step_inactive_node(Node in_node) {
   Node out_node = in_node;
-  if (in_node.top_data != vec4(0.0)) {
+  if (in_node.top_data.x != -2.0) {
     int parent_n_id = int(in_node.data.x);
     int parent_id = int(in_node.top_data[parent_n_id]);
     int opposite_id = int(in_node.top_data[(parent_n_id + 2) % 4]);

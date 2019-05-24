@@ -5,7 +5,7 @@
 
 const int MAX_NUM_USER_UNIFS = 100;
 // TODO - increase later
-const uint32_t MAX_STORAGE_QUEUE_LEN = 10;//1*1000; 
+const uint32_t MAX_STORAGE_QUEUE_LEN = 1*1000; 
 
 class AppState;
 
@@ -38,7 +38,6 @@ struct Camera {
   vec3 forward() const;
 };
 
-// TODO - not all of these are used anymore
 struct Controls {
   bool show_dev_console = true;
   int target_fps = 30;
@@ -57,7 +56,7 @@ struct Controls {
   bool log_triangle_indices = false;
   bool log_durations = false;
   int num_zygote_samples = 40;
-  int reserve_node_count = 0;
+  int inactive_node_count = 0;
   // for the simulation/animation pane
   int num_iters = 0;
   bool animating_sim = true;
@@ -108,11 +107,13 @@ struct RenderPushConstants {
 
 struct ComputePushConstants {
   uint32_t node_count;
+  uint32_t inactive_node_count;
   uint32_t iter_num;
   uint32_t queue_len;
   array<vec4, MAX_NUM_USER_UNIFS> user_unif_vals;
 
-  ComputePushConstants(uint32_t node_count, uint32_t iter_num,
+  ComputePushConstants(uint32_t node_count, uint32_t inactive_node_count,
+      uint32_t iter_num,
       uint32_t queue_len,
       const vector<UserUnif>& user_unifs);
 };

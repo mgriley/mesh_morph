@@ -96,8 +96,8 @@ array<void*, ATTRIBUTES_COUNT> MorphNodes::data_ptrs() {
 string raw_node_str(MorphNode const& node) {
   array<char, 200> s;
   sprintf(s.data(),
-      "pos: %s, vel: %s, neighbors: %s, data: %s, "
-      "top_data: %s",
+      "p: %s, v: %s, n: %s, d: %s, "
+      "t_d: %s",
         vec4_str(node.pos).c_str(),
         vec4_str(node.vel).c_str(),
         vec4_str(node.neighbors).c_str(),
@@ -137,10 +137,12 @@ RenderPushConstants::RenderPushConstants(mat4 model, mat4 view,
   set_user_unif_vals(user_unifs, user_unif_vals);  
 }
 
-ComputePushConstants::ComputePushConstants(uint32_t node_count,
+ComputePushConstants::ComputePushConstants(
+    uint32_t node_count, uint32_t inactive_node_count,
     uint32_t iter_num, uint32_t queue_len,
     const vector<UserUnif>& user_unifs) :
-  node_count(node_count), iter_num(iter_num), queue_len(queue_len)
+  node_count(node_count), inactive_node_count(inactive_node_count),
+  iter_num(iter_num), queue_len(queue_len)
 {
   set_user_unif_vals(user_unifs, user_unif_vals);  
 }
