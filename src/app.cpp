@@ -3,6 +3,8 @@
 #include "types.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -20,7 +22,9 @@
 #include <fstream>
 #include <cstring>
 
-const uint32_t MAX_NUM_VERTICES = 16*1000;
+// constrained by maxImageDimension1D = 16384
+// but also by this bug: cannot imageStore for index >= 4096
+const uint32_t MAX_NUM_VERTICES = 4096;
 const uint32_t MAX_NUM_INDICES = (int) 1e6;
 
 const uint32_t LOCAL_WORKGROUP_SIZE = 256;
@@ -233,7 +237,27 @@ void copy_buffer(
   end_single_time_commands(state, tmp_cmd_buffer);
 }
 
-void create_buffer(
+void create_buffer(AppState& state,
+    VkDeviceSize size, VkBufferUsageFlags usage,
+    VmaMemoryUsage mem_usage, VmaAllocationCreateFlags flags,
+    VkBuffer& buffer, VmaAllocation& allocation) {
+  VkBufferCreateInfo buffer_info = {
+    .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    .size = size,
+    .usage = usage,
+    .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+  };
+  VmaAllocationCreateInfo allocation_info = {
+    .flags = flags,
+    .usage = mem_usage
+  };
+  VkResult res = vmaCreateBuffer(state.allocator, &buffer_info, &allocation_info,
+      &buffer, &allocation, nullptr);
+  assert(res == VK_SUCCESS);
+}
+
+/*
+void old_create_buffer(
     VkDevice device,
     VkPhysicalDevice phys_device,
     VkDeviceSize size, VkBufferUsageFlags usage,
@@ -262,11 +286,12 @@ void create_buffer(
 
   vkBindBufferMemory(device, buffer, buffer_mem, 0);
 }
+*/
 
-// TODO - move all the vulkan helper stuff to a diff file
+// TODO - move all the vulkan helper stuff to a different file
 struct StagingBuf {
   VkBuffer buf;
-  VkDeviceMemory mem;
+  VmaAllocation allocation;
 
   StagingBuf(AppState& state, uint32_t buffer_size);
   void cleanup(AppState& state);
@@ -274,17 +299,15 @@ struct StagingBuf {
 
 StagingBuf::StagingBuf(AppState& state, uint32_t buffer_size)
 {
-  create_buffer(state.device, state.phys_device, buffer_size,
+  create_buffer(state, buffer_size,
       VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      buf, mem);
+      VMA_MEMORY_USAGE_CPU_ONLY, 0,
+      buf, allocation);
 }
 
 void StagingBuf::cleanup(AppState& state) {
-  vkDestroyBuffer(state.device, buf, nullptr);
-  vkFreeMemory(state.device, mem, nullptr);
+  vmaDestroyBuffer(state.allocator, buf, allocation);
 }
 
 VkFormat find_supported_format(VkPhysicalDevice& phys_device,
@@ -324,7 +347,21 @@ void enumerate_instance_extensions() {
   vector<VkExtensionProperties> ext_props{num_exts};
   res = vkEnumerateInstanceExtensionProperties(nullptr,
       &num_exts, ext_props.data());
-  printf("exts:\n");
+  printf("instance exts:\n");
+  for (int i = 0; i < num_exts; ++i) {
+    printf("%s\n", ext_props[i].extensionName);
+  }
+  printf("\n");
+}
+
+void enumerate_device_extensions(VkPhysicalDevice& phys_device) {
+  uint32_t num_exts = 0;
+  VkResult res = vkEnumerateDeviceExtensionProperties(
+      phys_device, nullptr, &num_exts, nullptr);
+  vector<VkExtensionProperties> ext_props{num_exts};
+  res = vkEnumerateDeviceExtensionProperties(
+      phys_device, nullptr, &num_exts, ext_props.data());
+  printf("device exts:\n");
   for (int i = 0; i < num_exts; ++i) {
     printf("%s\n", ext_props[i].extensionName);
   }
@@ -339,7 +376,7 @@ void enumerate_instance_layers() {
   vector<VkLayerProperties> layer_props{num_layers};
   res = vkEnumerateInstanceLayerProperties(
       &num_layers, layer_props.data());
-  printf("layers:\n");
+  printf("instance layers:\n");
   for (int i = 0; i < num_layers; ++i) {
     printf("%s\n", layer_props[i].layerName);
   }
@@ -482,6 +519,7 @@ void setup_physical_device(AppState& state) {
       &state.phys_device);
   assert(!res && device_count == 1);
 
+  enumerate_device_extensions(state.phys_device);
   log_device_properties(state.phys_device);
 }
 
@@ -526,7 +564,10 @@ void setup_logical_device(AppState& state) {
     .pQueuePriorities = &queue_priority
   };
   vector<const char*> device_ext_names = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    // used by VMA:
+    "VK_KHR_dedicated_allocation",
+    "VK_KHR_get_memory_requirements2"
   };
   VkDeviceCreateInfo device_info = {
     .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -545,6 +586,16 @@ void setup_logical_device(AppState& state) {
 
   // retrieve our queue
   vkGetDeviceQueue(state.device, state.target_family_index, 0, &state.queue);
+
+  // setup the allocator
+  VmaAllocatorCreateInfo allocator_info = {
+    // allows the lib to use the dedicated_allocation ext to choose
+    // whether to create a dedicated device memory or not for some allocation
+    .flags = VMA_ALLOCATOR_CREATE_KHR_DEDICATED_ALLOCATION_BIT,
+    .physicalDevice = state.phys_device,
+    .device = state.device
+  };
+  vmaCreateAllocator(&allocator_info, &state.allocator);
 }
 
 void prepare_swapchain_creation(AppState& state) {
@@ -1043,9 +1094,8 @@ void setup_command_pool(AppState& state) {
 
 void create_image(AppState& state, uint32_t w, uint32_t h,
     VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage,
-    VkMemoryPropertyFlags mem_props, VkImage& image,
-    VkDeviceMemory& image_mem) {
-
+    VmaMemoryUsage mem_usage, VmaAllocationCreateFlags flags,
+    VkImage& image, VmaAllocation& allocation) {
   VkImageCreateInfo img_info = {
     .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
     .imageType = VK_IMAGE_TYPE_2D,
@@ -1062,23 +1112,13 @@ void create_image(AppState& state, uint32_t w, uint32_t h,
     .samples = VK_SAMPLE_COUNT_1_BIT,
     .flags = 0
   };
-  VkResult res = vkCreateImage(state.device, &img_info,
-      nullptr, &image);
-  assert(res == VK_SUCCESS);
-
-  VkMemoryRequirements mem_reqs;
-  vkGetImageMemoryRequirements(state.device, image, &mem_reqs);
-  VkMemoryAllocateInfo alloc_info = {
-    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-    .allocationSize = mem_reqs.size,
-    .memoryTypeIndex = find_mem_type_index(state.phys_device,
-        mem_reqs.memoryTypeBits, mem_props)
+  VmaAllocationCreateInfo allocation_info = {
+    .flags = flags,
+    .usage = mem_usage
   };
-  res = vkAllocateMemory(state.device, &alloc_info, nullptr,
-    &image_mem);
+  VkResult res = vmaCreateImage(state.allocator,
+      &img_info, &allocation_info, &image, &allocation, nullptr);
   assert(res == VK_SUCCESS);
-
-  vkBindImageMemory(state.device, image, image_mem, 0); 
 }
 
 void copy_buffer_to_image(AppState& state, VkBuffer buffer,
@@ -1169,8 +1209,10 @@ void setup_depth_resources(AppState& state) {
   create_image(state, state.target_extent.width, state.target_extent.height,
       depth_format, VK_IMAGE_TILING_OPTIMAL,
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, state.depth_img,
-      state.depth_img_mem);
+      VMA_MEMORY_USAGE_GPU_ONLY,
+      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+      state.depth_img,
+      state.depth_img_alloc);
   state.depth_img_view = create_image_view(state, state.depth_img,
       depth_format, VK_IMAGE_ASPECT_DEPTH_BIT);
 
@@ -1182,26 +1224,23 @@ void setup_depth_resources(AppState& state) {
 void setup_buffer_state_vert_buffers(AppState& state, int buf_index) {
   BufferState& buf_state = state.buffer_states[buf_index];
 
-  // TODO - left off here. Verify tht the buffer is of the correct
-  // size and the buffer view, too!
-
   VkDeviceSize buffer_size = sizeof(vec4) * MAX_NUM_VERTICES;
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
-    create_buffer(state.device, state.phys_device,
-        buffer_size,
+    create_buffer(state, buffer_size,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
           VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
           VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-        buf_state.vert_buffers[i], buf_state.vert_buffer_mems[i]);
-
+        VMA_MEMORY_USAGE_GPU_ONLY,
+        VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+        buf_state.vert_buffers[i], buf_state.vert_buffer_allocs[i]);
+    
     VkBufferViewCreateInfo buffer_view_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
       .buffer = buf_state.vert_buffers[i],
       .format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .offset = 0,
-      .range = VK_WHOLE_SIZE
+      .range = buffer_size
     };
     VkResult res = vkCreateBufferView(state.device,
         &buffer_view_info, nullptr, &buf_state.vert_buffer_views[i]);
@@ -1275,7 +1314,7 @@ void setup_buffer_state_compute_desc_sets(AppState& state, int buf_index) {
   VkDescriptorBufferInfo storage_buffer_info = {
     .buffer = state.compute_storage_buffer,
     .offset = 0,
-    .range = VK_WHOLE_SIZE
+    .range = sizeof(ComputeStorage)
   };
   VkWriteDescriptorSet compute_storage_write = {
     .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1308,14 +1347,13 @@ void setup_buffer_states(AppState& state) {
 
 void setup_compute_storage_buffer(AppState& state) {
   VkDeviceSize buffer_size = sizeof(ComputeStorage);
-  create_buffer(state.device, state.phys_device,
-      buffer_size,
+  create_buffer(state, buffer_size,
       VK_BUFFER_USAGE_TRANSFER_DST_BIT |
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      state.compute_storage_buffer, state.compute_storage_buffer_mem);
+      VMA_MEMORY_USAGE_GPU_ONLY, 0,
+      state.compute_storage_buffer, state.compute_storage_buffer_alloc);
 }
 
 // TODO - remove
@@ -1356,12 +1394,11 @@ void old_setup_vertex_buffer(AppState& state, vector<Vertex>& vertices) {
 
 void setup_index_buffers(AppState& state) {
   for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
-    create_buffer(state.device, state.phys_device,
-        sizeof(uint32_t) * MAX_NUM_INDICES,
+    create_buffer(state, sizeof(uint32_t) * MAX_NUM_INDICES,
         VK_BUFFER_USAGE_TRANSFER_DST_BIT |
           VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          state.index_buffers[i], state.index_buffer_mems[i]);
+        VMA_MEMORY_USAGE_GPU_ONLY, 0,
+        state.index_buffers[i], state.index_buffer_allocs[i]);
   }
 }
 
@@ -1400,10 +1437,9 @@ void setup_command_buffers(AppState& state) {
 void copy_data_to_buffer(AppState& state, StagingBuf& staging,
     void* src_data, uint32_t buffer_size, VkBuffer& dst_buffer) {
   void* staging_data;
-  vkMapMemory(state.device, staging.mem,
-      0, buffer_size, 0, &staging_data);
+  vmaMapMemory(state.allocator, staging.allocation, &staging_data);
   memcpy(staging_data, src_data, (size_t) buffer_size);
-  vkUnmapMemory(state.device, staging.mem);
+  vmaUnmapMemory(state.allocator, staging.allocation);
   copy_buffer(state, staging.buf, dst_buffer, buffer_size);
 }
 
@@ -1411,15 +1447,14 @@ void copy_data_from_buffer(AppState& state, StagingBuf& staging,
     void* dst_data, uint32_t buffer_size, VkBuffer& src_buffer) {
   copy_buffer(state, src_buffer, staging.buf, buffer_size);
   void* staging_data;
-  vkMapMemory(state.device, staging.mem,
-      0, buffer_size, 0, &staging_data);
+  vmaMapMemory(state.allocator, staging.allocation, &staging_data);
   memcpy(dst_data, staging_data, (size_t) buffer_size);
-  vkUnmapMemory(state.device, staging.mem);
+  vmaUnmapMemory(state.allocator, staging.allocation);
 }
 
 void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   uint32_t node_count = node_vecs.pos_vec.size();
-  assert(node_count < MAX_NUM_VERTICES);
+  assert(node_count <= MAX_NUM_VERTICES);
   state.node_count = node_count;
 
   VkDeviceSize buffer_size = sizeof(vec4) * node_count;
@@ -1576,8 +1611,8 @@ void setup_sync_objects(AppState& state) {
 
 void cleanup_swapchain(AppState& state) {
   vkDestroyImageView(state.device, state.depth_img_view, nullptr);
-  vkDestroyImage(state.device, state.depth_img, nullptr);
-  vkFreeMemory(state.device, state.depth_img_mem, nullptr);
+  vmaDestroyImage(state.allocator, state.depth_img,
+      state.depth_img_alloc);
 
   for (VkFramebuffer& fb : state.swapchain_framebuffers) {
     vkDestroyFramebuffer(state.device, fb, nullptr);
@@ -1608,10 +1643,8 @@ void cleanup_vulkan(AppState& state) {
     for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
       vkDestroyBufferView(state.device,
           buf_state.vert_buffer_views[i], nullptr);
-      vkDestroyBuffer(state.device,
-          buf_state.vert_buffers[i], nullptr);
-      vkFreeMemory(state.device,
-          buf_state.vert_buffer_mems[i], nullptr);
+      vmaDestroyBuffer(state.allocator, buf_state.vert_buffers[i],
+          buf_state.vert_buffer_allocs[i]);
     }
   }
   vkDestroyPipeline(state.device, state.compute_pipeline, nullptr);
@@ -1625,11 +1658,11 @@ void cleanup_vulkan(AppState& state) {
       state.compute_desc_set_layout, nullptr);
 
   for (uint32_t i = 0; i < PIPELINES_COUNT; ++i) {
-    vkDestroyBuffer(state.device, state.index_buffers[i], nullptr);
-    vkFreeMemory(state.device, state.index_buffer_mems[i], nullptr);
+    vmaDestroyBuffer(state.allocator, state.index_buffers[i],
+        state.index_buffer_allocs[i]);
   }
-  vkDestroyBuffer(state.device, state.compute_storage_buffer, nullptr);
-  vkFreeMemory(state.device, state.compute_storage_buffer_mem, nullptr);
+  vmaDestroyBuffer(state.allocator, state.compute_storage_buffer,
+      state.compute_storage_buffer_alloc);
 
   for (int i = 0; i < max_frames_in_flight; ++i) {
     vkDestroySemaphore(state.device, state.render_done_semas[i], nullptr);
@@ -1638,6 +1671,7 @@ void cleanup_vulkan(AppState& state) {
   }
   vkDestroyCommandPool(state.device, state.cmd_pool, nullptr);
 
+  vmaDestroyAllocator(state.allocator);
   vkDestroyDevice(state.device, nullptr);
 
   state.destroy_debug_utils(state.inst, state.debug_messenger, nullptr);
@@ -2007,6 +2041,52 @@ void setup_test_queue(ComputeStorage& cs) {
   cs.end_ptrs = {3, 3};
 }
 
+/*
+   For debugging race conditions
+*/
+void cmd_full_pipeline_barrier(VkCommandBuffer& cmd_buffer) {
+	VkMemoryBarrier memory_barrier = {
+    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+		.srcAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+										 VK_ACCESS_INDEX_READ_BIT |
+										 VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+										 VK_ACCESS_UNIFORM_READ_BIT |
+										 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_SHADER_READ_BIT |
+										 VK_ACCESS_SHADER_WRITE_BIT |
+										 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+										 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+										 VK_ACCESS_TRANSFER_READ_BIT |
+										 VK_ACCESS_TRANSFER_WRITE_BIT |
+										 VK_ACCESS_HOST_READ_BIT |
+										 VK_ACCESS_HOST_WRITE_BIT,
+		.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+										 VK_ACCESS_INDEX_READ_BIT |
+										 VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
+										 VK_ACCESS_UNIFORM_READ_BIT |
+										 VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_SHADER_READ_BIT |
+										 VK_ACCESS_SHADER_WRITE_BIT |
+										 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+										 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+										 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+										 VK_ACCESS_TRANSFER_READ_BIT |
+										 VK_ACCESS_TRANSFER_WRITE_BIT |
+										 VK_ACCESS_HOST_READ_BIT |
+										 VK_ACCESS_HOST_WRITE_BIT
+  };
+
+  vkCmdPipelineBarrier(cmd_buffer,
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+      1, &memory_barrier,
+      0, nullptr,
+      0, nullptr);
+}
+
 void dispatch_simulation(AppState& state) {
 
   // init shared storage
@@ -2290,7 +2370,7 @@ void create_ui(AppState& state) {
   ImGui::Text("init data:");
   ImGui::InputInt("AxA samples", &controls.num_zygote_samples);
   controls.num_zygote_samples = clamp(
-      controls.num_zygote_samples, 2, 500);
+      controls.num_zygote_samples, 2, (int) sqrt(MAX_NUM_VERTICES));
   
   ImGui::Text("simulation:"); 
   int max_iter_num = 1*1000*1000*1000;

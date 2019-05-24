@@ -376,6 +376,15 @@ Node dummy_step(Node in_node) {
   return in_node;
 }
 
+Node dummy_step2(Node in_node) {
+  Node out_node = in_node;
+  out_node.pos += vec4(1.0);
+  //out_node.vel += vec4(1.0);
+  //out_node.neighbors = vec4(1.0);
+  //out_node.data += vec4(1.0);
+  return out_node;
+}
+
 bool push_value(uint val) {
   uint cur_index = unif.iter_num & 1;
   uint next_index = (unif.iter_num + 1) & 1;
@@ -452,6 +461,27 @@ void debug_main() {
     atomicAdd(store.step_counters[0], 1);
     atomicMax(store.step_counters[1], id);
   }
+}
+
+/*
+Getting spooky undefined behavior. Unsure what the issue is.
+*/
+void write_bug_main() {
+  int id = int(gl_GlobalInvocationID.x);
+  /*
+  if (id >= unif.node_count) {
+    return;
+  }
+  */
+  vec4 p = imageLoad(in_pos, id) + vec4(1.0);
+  vec4 v = imageLoad(in_vel, id) + vec4(1.0);
+  vec4 n = imageLoad(in_neighbors, id) + vec4(1.0);
+  vec4 d = imageLoad(in_data, id) + vec4(1.0);
+
+  imageStore(out_pos, id, p);
+  imageStore(out_vel, id, v);
+  imageStore(out_neighbors, id, n);
+  imageStore(out_data, id, d);
 }
 
 void main() {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "utils.h"
+#include "vk_mem_alloc.h"
 
 const int MAX_NUM_USER_UNIFS = 100;
 // TODO - increase later
@@ -143,7 +144,7 @@ string raw_node_str(MorphNode const& node);
 // A single buffer in the double-buffered simulation
 struct BufferState {
   array<VkBuffer, ATTRIBUTES_COUNT> vert_buffers;
-  array<VkDeviceMemory, ATTRIBUTES_COUNT> vert_buffer_mems;
+  array<VmaAllocation, ATTRIBUTES_COUNT> vert_buffer_allocs;
   array<VkBufferView, ATTRIBUTES_COUNT> vert_buffer_views;
 
   VkDescriptorSet render_desc_set = VK_NULL_HANDLE;
@@ -158,8 +159,10 @@ struct AppState {
   // number of vertices currently in the vertex buffers
   uint32_t node_count = 0;
 
+  VmaAllocator allocator;
+
   VkBuffer compute_storage_buffer;
-  VkDeviceMemory compute_storage_buffer_mem;
+  VmaAllocation compute_storage_buffer_alloc;
 
   Camera cam;
   Controls controls;
@@ -209,7 +212,7 @@ struct AppState {
   // contains the index data for rendering with each different
   // graphics pipeline
   array<VkBuffer, PIPELINES_COUNT> index_buffers;
-  array<VkDeviceMemory, PIPELINES_COUNT> index_buffer_mems;
+  array<VmaAllocation, PIPELINES_COUNT> index_buffer_allocs;
   array<uint32_t, PIPELINES_COUNT> index_counts;
 
   VkCommandPool cmd_pool;
@@ -220,7 +223,7 @@ struct AppState {
   vector<VkFence> in_flight_fences;
 
   VkImage depth_img;
-  VkDeviceMemory depth_img_mem;
+  VmaAllocation depth_img_alloc;
   VkImageView depth_img_view;
 
   size_t current_frame;
