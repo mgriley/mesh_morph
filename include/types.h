@@ -5,7 +5,7 @@
 
 const int MAX_NUM_USER_UNIFS = 100;
 // TODO - increase later
-const uint32_t STORAGE_QUEUE_LEN = 10;//1*1000; 
+const uint32_t MAX_STORAGE_QUEUE_LEN = 10;//1*1000; 
 
 class AppState;
 
@@ -14,6 +14,7 @@ enum Attributes {
   ATTRIB_VEL,
   ATTRIB_NEIGHBORS,
   ATTRIB_DATA,
+  ATTRIB_TOP_DATA,
 
   ATTRIBUTES_COUNT
 };
@@ -56,6 +57,7 @@ struct Controls {
   bool log_triangle_indices = false;
   bool log_durations = false;
   int num_zygote_samples = 40;
+  int reserve_node_count = 0;
   // for the simulation/animation pane
   int num_iters = 0;
   bool animating_sim = true;
@@ -89,7 +91,7 @@ struct ComputeStorage {
   // for circular buffer queue
   array<uint32_t, 2> start_ptrs = {0, 0};
   array<uint32_t, 2> end_ptrs = {0, 0};
-  array<uint32_t, STORAGE_QUEUE_LEN> queue_mem = {0};
+  array<uint32_t, MAX_STORAGE_QUEUE_LEN> queue_mem = {0};
 
   ComputeStorage();
 };
@@ -121,9 +123,11 @@ struct MorphNode {
   // in order of: {right, upper, left, lower} wrt surface normal
   vec4 neighbors = vec4(0.0);
   vec4 data = vec4(0.0);
+  vec4 top_data = vec4(0.0);
 
   MorphNode();
-  MorphNode(vec4 pos, vec4 vel, vec4 neighbors, vec4 data);
+  MorphNode(vec4 pos, vec4 vel, vec4 neighbors,
+      vec4 data, vec4 top_data);
 };
 
 struct MorphNodes {
@@ -131,12 +135,13 @@ struct MorphNodes {
   vector<vec4> vel_vec;
   vector<vec4> neighbors_vec;
   vector<vec4> data_vec;
+  vector<vec4> top_data_vec;
 
   MorphNodes(size_t num_nodes);
   MorphNodes(vector<MorphNode> const& nodes);
   MorphNode node_at(size_t i) const;
 
-  vector<void*> data_ptrs();
+  array<void*, ATTRIBUTES_COUNT> data_ptrs();
 };
 
 string raw_node_str(MorphNode const& node);

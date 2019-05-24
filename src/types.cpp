@@ -40,16 +40,18 @@ MorphNode::MorphNode():
   pos(0.0),
   vel(0.0),
   neighbors(-1.0),
-  data(0.0)
+  data(0.0),
+  top_data(0.0)
 {
 }
 
 MorphNode::MorphNode(vec4 pos, vec4 vel,
-    vec4 neighbors, vec4 data) :
+    vec4 neighbors, vec4 data, vec4 top_data) :
   pos(pos),
   vel(vel),
   neighbors(neighbors),
-  data(data)
+  data(data),
+  top_data(top_data)
 {
 }
 
@@ -57,7 +59,8 @@ MorphNodes::MorphNodes(size_t num_nodes) :
   pos_vec(num_nodes),
   vel_vec(num_nodes),
   neighbors_vec(num_nodes),
-  data_vec(num_nodes)
+  data_vec(num_nodes),
+  top_data_vec(num_nodes)
 {
 }
 
@@ -65,7 +68,8 @@ MorphNodes::MorphNodes(vector<MorphNode> const& nodes) :
   pos_vec(nodes.size()),
   vel_vec(nodes.size()),
   neighbors_vec(nodes.size()),
-  data_vec(nodes.size())
+  data_vec(nodes.size()),
+  top_data_vec(nodes.size())
 {
   for (int i = 0; i < nodes.size(); ++i) {
     MorphNode const& node = nodes[i];
@@ -73,29 +77,32 @@ MorphNodes::MorphNodes(vector<MorphNode> const& nodes) :
     vel_vec[i] = node.vel;
     neighbors_vec[i] = node.neighbors;
     data_vec[i] = node.data;
+    top_data_vec[i] = node.top_data;
   }
 }
 
 MorphNode MorphNodes::node_at(size_t i) const {
   return MorphNode(pos_vec[i], vel_vec[i], 
-      neighbors_vec[i], data_vec[i]);
+      neighbors_vec[i], data_vec[i], top_data_vec[i]);
 }
 
-vector<void*> MorphNodes::data_ptrs() { 
-  vector<void*> data_ptrs = {
+array<void*, ATTRIBUTES_COUNT> MorphNodes::data_ptrs() { 
+  return {
     pos_vec.data(), vel_vec.data(), neighbors_vec.data(),
-    data_vec.data()
+    data_vec.data(), top_data_vec.data()
   };
-  return data_ptrs;
 }
 
 string raw_node_str(MorphNode const& node) {
   array<char, 200> s;
-  sprintf(s.data(), "pos: %s, vel: %s, neighbors: %s, data: %s",
+  sprintf(s.data(),
+      "pos: %s, vel: %s, neighbors: %s, data: %s, "
+      "top_data: %s",
         vec4_str(node.pos).c_str(),
         vec4_str(node.vel).c_str(),
         vec4_str(node.neighbors).c_str(),
-        vec4_str(node.data).c_str());
+        vec4_str(node.data).c_str(),
+        vec4_str(node.top_data).c_str());
   return string(s.data());
 }
 

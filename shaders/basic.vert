@@ -18,11 +18,13 @@ layout(location = 0) in vec4 vs_pos;
 layout(location = 1) in vec4 vs_vel;
 layout(location = 2) in vec4 vs_neighbors;
 layout(location = 3) in vec4 vs_data;
+layout(location = 4) in vec4 vs_top_data;
 
 layout(binding = 0, rgba32f) uniform readonly imageBuffer buf_pos;
 layout(binding = 1, rgba32f) uniform readonly imageBuffer buf_vel;
 layout(binding = 2, rgba32f) uniform readonly imageBuffer buf_neighbors;
 layout(binding = 3, rgba32f) uniform readonly imageBuffer buf_data;
+layout(binding = 4, rgba32f) uniform readonly imageBuffer buf_top_data;
 
 layout(location = 0) out vec3 fs_nor;
 layout(location = 1) out vec3 fs_col;

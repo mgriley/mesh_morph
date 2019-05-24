@@ -165,6 +165,8 @@ VkShaderModule create_shader_module(VkDevice& device,
   return module;
 }
 
+// TODO - no longer used
+/*
 uint32_t find_mem_type_index(VkPhysicalDevice& phys_device,
     uint32_t type_filter,
     VkMemoryPropertyFlags target_mem_flags) {
@@ -186,6 +188,7 @@ uint32_t find_mem_type_index(VkPhysicalDevice& phys_device,
   assert(found_mem_type);
   return mem_type_index;
 }
+*/
 
 VkCommandBuffer begin_single_time_commands(AppState& state) {
   VkCommandBufferAllocateInfo alloc_info = {
@@ -1463,7 +1466,7 @@ void write_nodes_to_buffers(AppState& state, MorphNodes& node_vecs) {
   // Always write to the first buffer
   BufferState& buf_state = state.buffer_states[0];
 
-  vector<void*> copy_srcs = node_vecs.data_ptrs();
+  array<void*, ATTRIBUTES_COUNT> copy_srcs = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
     copy_data_to_buffer(state, staging,
         copy_srcs[i], buffer_size, buf_state.vert_buffers[i]);
@@ -1481,7 +1484,7 @@ MorphNodes read_nodes_from_buffers(AppState& state, uint32_t buf_index) {
   VkDeviceSize buffer_size = sizeof(vec4) * state.node_count;
 
   StagingBuf staging(state, buffer_size);
-  vector<void*> copy_dsts = node_vecs.data_ptrs();
+  array<void*, ATTRIBUTES_COUNT> copy_dsts = node_vecs.data_ptrs();
   for (uint32_t i = 0; i < ATTRIBUTES_COUNT; ++i) {
     copy_data_from_buffer(state, staging, copy_dsts[i],
         buffer_size, buf_state.vert_buffers[i]);
@@ -1807,8 +1810,8 @@ void render_frame(AppState& state) {
 void run_debug_test(AppState& state) {
   printf("running debug test\n");
   vector<MorphNode> nodes = {
-    MorphNode(vec4(0.0f), vec4(0.0f), vec4(0.0f), vec4(0.0f)),
-    MorphNode(vec4(0.0f), vec4(1.0f), vec4(2.0f), vec4(3.0f)),
+    MorphNode(vec4(0.0f), vec4(0.0f), vec4(0.0f), vec4(0.0f), vec4(0.0f)),
+    MorphNode(vec4(0.0f), vec4(1.0f), vec4(2.0f), vec4(3.0f), vec4(0.0f)),
   };
   MorphNodes in_node_vecs(nodes);
   printf("in nodes:\n");
@@ -1861,9 +1864,13 @@ int coord_to_index(ivec2 coord, ivec2 samples) {
 }
 
 // Outputs the nodes, for rendering
-void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes) {
+void gen_morph_data(ivec2 samples, uint32_t reserve_node_count,
+    vector<MorphNode>& out_nodes,
+    vector<uint32_t>& out_queue_values) {
+
   vector<MorphNode> vertex_nodes;
-  vertex_nodes.reserve(samples[0] * samples[1]);
+  vertex_nodes.reserve(samples[0] * samples[1] + reserve_node_count);
+  // generate active nodes
   for (int y = 0; y < samples[1]; ++y) {
     for (int x = 0; x < samples[0]; ++x) {
       ivec2 coord(x, y);
@@ -1877,11 +1884,23 @@ void gen_morph_data(ivec2 samples, vector<MorphNode>& out_nodes) {
           (float) right_neighbor, (float) upper_neighbor,
           (float) left_neighbor, (float) lower_neighbor);
 
-      MorphNode vert_node(vec4(pos, 0.0), vec4(0.0), neighbors, vec4(0.0));
+      MorphNode vert_node(vec4(pos, 0.0), vec4(0.0), neighbors,
+          vec4(0.0), vec4(0.0));
       vertex_nodes.push_back(vert_node);
     }
   }
+  // generate nodes on reserve
+  vector<uint32_t> queue_values;
+  queue_values.reserve(reserve_node_count);
+  for (int i = 0; i < reserve_node_count; ++i) {
+    uint32_t next_index = vertex_nodes.size();
+    MorphNode node(vec4(0.0), vec4(0.0), vec4(-2.0),
+        vec4(0.0), vec4(0.0));
+    vertex_nodes.push_back(node);
+    queue_values.push_back(next_index);
+  }
   out_nodes = std::move(vertex_nodes);
+  out_queue_values = std::move(queue_values);
 }
 
 using IndexPair = std::pair<uint32_t, uint32_t>;
@@ -1983,21 +2002,7 @@ void update_indices(AppState& state, MorphNodes& node_vecs) {
   }
 }
 
-void set_initial_sim_data(AppState& state) {
-
-  ivec2 zygote_samples(state.controls.num_zygote_samples);
-  vector<MorphNode> nodes;
-  gen_morph_data(zygote_samples, nodes);
-  MorphNodes node_vecs(nodes);
- 
-  if (state.controls.log_input_nodes) {
-    printf("input nodes:\n");
-    log_nodes(node_vecs);
-  }
-
-  write_nodes_to_buffers(state, node_vecs);
-}
-
+// TODO - make a way to only log what is actually used
 void log_compute_storage(ComputeStorage& cs) {
   printf(
       "ctr0 %4d, ctr1 %4d\n"
@@ -2039,6 +2044,41 @@ void setup_test_queue(ComputeStorage& cs) {
   cs.queue_mem = {1, 2, 3};
   cs.start_ptrs = {0, 0};
   cs.end_ptrs = {3, 3};
+}
+
+void setup_queue_mem(ComputeStorage& cs, vector<uint32_t>& queue_values) {
+  assert(queue_values.size() <= cs.queue_mem.size());
+  std::fill(cs.queue_mem.begin(), cs.queue_mem.end(), 0);
+  std::copy(queue_values.begin(), queue_values.end(), cs.queue_mem.begin());
+  cs.start_ptrs = {0, 0};
+  uint32_t end_ptr = queue_values.size();
+  cs.end_ptrs = {end_ptr, end_ptr};
+}
+
+void set_initial_sim_data(AppState& state) {
+  ivec2 zygote_samples(state.controls.num_zygote_samples);
+  vector<MorphNode> nodes;
+  vector<uint32_t> cs_queue_mem;
+  gen_morph_data(zygote_samples, state.controls.reserve_node_count,
+      nodes, cs_queue_mem);
+  MorphNodes node_vecs(nodes);
+
+  // init shared storage
+  ComputeStorage compute_storage;
+  setup_queue_mem(compute_storage, cs_queue_mem);
+  //setup_test_queue(compute_storage);
+  write_to_compute_storage(state, compute_storage);
+ 
+  if (state.controls.log_input_nodes) {
+    printf("input nodes:\n");
+    log_nodes(node_vecs);
+  }
+  if (state.controls.log_input_compute_storage) {
+    printf("input compute storage:\n");
+    log_compute_storage(compute_storage);
+  }
+
+  write_nodes_to_buffers(state, node_vecs);
 }
 
 /*
@@ -2087,13 +2127,7 @@ void cmd_full_pipeline_barrier(VkCommandBuffer& cmd_buffer) {
       0, nullptr);
 }
 
-void dispatch_simulation(AppState& state) {
-
-  // init shared storage
-  ComputeStorage in_compute_storage;
-  setup_test_queue(in_compute_storage);
-  write_to_compute_storage(state, in_compute_storage);
- 
+void dispatch_simulation(AppState& state) { 
   VkCommandBuffer tmp_buffer = begin_single_time_commands(state);
 
   VkMemoryBarrier mem_barrier = {
@@ -2128,7 +2162,7 @@ void dispatch_simulation(AppState& state) {
         0, nullptr);
 
     ComputePushConstants push_consts(
-        state.node_count, i, STORAGE_QUEUE_LEN,
+        state.node_count, i, MAX_STORAGE_QUEUE_LEN,
         state.compute_unifs);
     vkCmdPushConstants(tmp_buffer, state.compute_pipeline_layout,
         VK_SHADER_STAGE_COMPUTE_BIT, 0, 
@@ -2140,19 +2174,6 @@ void dispatch_simulation(AppState& state) {
   end_single_time_commands(state, tmp_buffer);
 
   state.result_buffer = num_iters & 1;
-
-  // debug logging
-
-  if (state.controls.log_input_compute_storage) {
-    printf("input compute storage:\n");
-    log_compute_storage(in_compute_storage);
-  }
-  if (state.controls.log_output_compute_storage) {
-    printf("output compute storage:\n");
-    ComputeStorage out_compute_storage =
-      read_from_compute_storage(state);
-    log_compute_storage(out_compute_storage);
-  }
 }
 
 void run_simulation_pipeline(AppState& state) { 
@@ -2167,6 +2188,12 @@ void run_simulation_pipeline(AppState& state) {
   if (state.controls.log_output_nodes) {
     printf("output nodes:\n");
     log_nodes(node_vecs);
+  }
+  if (state.controls.log_output_compute_storage) {
+    printf("output compute storage:\n");
+    ComputeStorage out_compute_storage =
+      read_from_compute_storage(state);
+    log_compute_storage(out_compute_storage);
   }
 }
 
@@ -2369,8 +2396,13 @@ void create_ui(AppState& state) {
   ImGui::Text("simulation controls:");
   ImGui::Text("init data:");
   ImGui::InputInt("AxA samples", &controls.num_zygote_samples);
+  ImGui::InputInt("reserve_node_count", &controls.reserve_node_count);
   controls.num_zygote_samples = clamp(
       controls.num_zygote_samples, 2, (int) sqrt(MAX_NUM_VERTICES));
+  uint32_t max_num_reserve_nodes = MAX_NUM_VERTICES -
+    (uint32_t) pow(controls.num_zygote_samples, 2);
+  controls.reserve_node_count = clamp(
+      controls.reserve_node_count, 0, (int) max_num_reserve_nodes);
   
   ImGui::Text("simulation:"); 
   int max_iter_num = 1*1000*1000*1000;

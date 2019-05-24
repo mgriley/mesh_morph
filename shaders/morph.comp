@@ -65,19 +65,22 @@ struct Node {
   vec4 vel;
   vec4 neighbors;
   vec4 data;
+  vec4 top_data;
 };
 
 layout(binding = 0, rgba32f) uniform readonly imageBuffer in_pos;
 layout(binding = 1, rgba32f) uniform readonly imageBuffer in_vel;
 layout(binding = 2, rgba32f) uniform readonly imageBuffer in_neighbors;
 layout(binding = 3, rgba32f) uniform readonly imageBuffer in_data;
+layout(binding = 4, rgba32f) uniform readonly imageBuffer in_top_data;
 
-layout(binding = 4, rgba32f) uniform writeonly imageBuffer out_pos;
-layout(binding = 5, rgba32f) uniform writeonly imageBuffer out_vel;
-layout(binding = 6, rgba32f) uniform writeonly imageBuffer out_neighbors;
-layout(binding = 7, rgba32f) uniform writeonly imageBuffer out_data;
+layout(binding = 5, rgba32f) uniform writeonly imageBuffer out_pos;
+layout(binding = 6, rgba32f) uniform writeonly imageBuffer out_vel;
+layout(binding = 7, rgba32f) uniform writeonly imageBuffer out_neighbors;
+layout(binding = 8, rgba32f) uniform writeonly imageBuffer out_data;
+layout(binding = 9, rgba32f) uniform writeonly imageBuffer out_top_data;
 
-layout(binding = 8) buffer ComputeStorage {
+layout(binding = 10) buffer ComputeStorage {
   uint step_counters[2];
 
   uint start_ptrs[2];
@@ -101,6 +104,53 @@ float hash3to1(vec3 p) {
 	return fract(dot(hash3(p),vec3(32.32,321.3,123.2)));
 }
 
+Node load_node(int id) {
+  Node node = {
+    imageLoad(in_pos, id),
+    imageLoad(in_vel, id),
+    imageLoad(in_neighbors, id),
+    imageLoad(in_data, id),
+    imageLoad(in_top_data, id)
+  };
+  return node;
+}
+
+void store_node(int id, Node node) {
+  imageStore(out_pos, id, node.pos);
+  imageStore(out_vel, id, node.vel);
+  imageStore(out_neighbors, id, node.neighbors);
+  imageStore(out_data, id, node.data);
+  imageStore(out_top_data, id, node.top_data);
+}
+
+bool push_value(uint val) {
+  uint cur_index = unif.iter_num & 1;
+  uint next_index = (unif.iter_num + 1) & 1;
+
+  uint start_ptr = store.start_ptrs[cur_index];
+  uint orig_ptr = atomicAdd(
+    store.end_ptrs[next_index], 1);
+  if (orig_ptr - start_ptr + 1 <= unif.queue_len) {
+    store.queue_mem[orig_ptr % unif.queue_len] = val;
+    return true;
+  }
+  return false;
+}
+
+bool pop_value(out uint res) {
+  uint cur_index = unif.iter_num & 1;
+  uint next_index = (unif.iter_num + 1) & 1;
+
+  uint end_ptr = store.end_ptrs[cur_index];
+  uint orig_ptr = atomicAdd(
+    store.start_ptrs[next_index], 1);
+  if (orig_ptr < end_ptr) {
+    res = store.queue_mem[orig_ptr % unif.queue_len];  
+    return true;
+  }
+  return false;
+}
+
 Node run_init_step(Node in_node) {
   int side_len = int(sqrt(unif.node_count));
   int target_src_id = int(unif.node_count *
@@ -114,7 +164,8 @@ Node run_init_step(Node in_node) {
     vec4(in_node.pos.xyz, 0.0),
     out_vel,
     in_node.neighbors,
-    vec4(-1.0)
+    vec4(-1.0),
+    vec4(-2.0)
   };
   return out_node;
 }
@@ -295,6 +346,92 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
   out_data = next_data;
 }
 
+/*
+Returns true iff success.
+*/
+bool pop_new_neighbors(vec4 cur_neighbors, out vec4 out_neighbors) {
+  // If cannot pop all that are required, free anything we have already popped
+  for (int i = 0; i < 4; ++i) {
+    if (cur_neighbors[i] == -1.0) {
+      out_neighbors[i] = -1.0;
+    } else {
+      uint val = 0;
+      if (!pop_value(val)) {
+        for (int j = 0; j < i; ++j) {
+          if (out_neighbors[j] != -1.0) {
+            push_value(uint(out_neighbors[j]));
+          }
+        }
+        return false;
+      }
+      out_neighbors[i] = float(val);
+    }
+  }
+  return true;
+}
+
+void compute_topology_transition(Node in_node, out vec4 out_neighbors,
+  out vec4 out_top_data) {
+
+  vec4 next_neighbors = in_node.neighbors;
+  vec4 next_top_data = in_node.top_data;
+
+  // TODO: - left off here. fix the algo to account for this
+  // Note: assume that the node will not be both a center
+  // for expansion and have edge requests from neighbors
+
+  if (in_node.top_data.w != -2.0) {
+    // this node in the center of an expansion. complete expansion
+    next_neighbors = in_node.top_data;
+    next_top_data = vec4(-2.0);
+  } else {
+    // apply topology changes requested by neighbors
+    for (int i = 0; i < 4; ++i) {
+      float n_index = in_node.neighbors[i];
+      if (n_index == -1.0) {
+        continue;
+      }
+      vec4 n_top_data = imageLoad(in_top_data, int(n_index));
+      float edge_request = n_top_data[(i + 2) % 4];
+      if (edge_request != -2.0) {
+        next_neighbors[i] = edge_request;
+      }
+    }
+
+    // possibly expand about this node
+    // TODO - left off here. find a suitable condition.
+    // pref only expand about src nodes (and perhaps straining ones)
+    // but for now try only source nodes
+    /*
+    if (true) {
+      // get the indices of four reserved nodes
+      vec4 n_indices = vec4(0.0);
+      if (pop_new_neighbors(in_node.neighbors, n_indices)) {
+        next_top_data = n_indices;
+
+        // setup the reserved node so that
+        // it will splice itself into the mesh on the next iter
+        // (b/w this node and our current neighbors)
+        for (int i = 0; i < 4; ++i) {
+          if (n_indices[i] == -1.0) {
+            continue;
+          }
+          vec4 splice_neighbors = vec4(0.0);
+          splice_neighbors[i] = in_node.neighbors[i];
+          splice_neighbors[(i + 1) % 4] = n_indices[(i + 1) % 4];
+          splice_neighbors[(i + 2) % 4] = id();
+          splice_neighbors[(i + 3) % 4] = n_indices[(i + 3) % 4];
+          imageStore(out_top_data, n_indices[i], splice_neighbors);
+        }
+      }
+    }
+    */
+  }
+  
+  out_neighbors = next_neighbors;
+  out_top_data = next_top_data;
+}
+
 vec3 compute_next_pos(Node in_node) {
   bool is_fixed = false;
   vec3 force = vec3(0.0);
@@ -336,12 +473,16 @@ vec3 compute_next_pos(Node in_node) {
   return p_next;
 }
 
-Node run_reg_step(Node in_node) {
+Node step_active_node(Node in_node) {
   vec3 next_pos = compute_next_pos(in_node);
   float next_heat = compute_next_heat(in_node);
   vec4 next_vel = vec4(0.0);
   vec4 next_data = vec4(0.0);
   compute_source_transition(in_node, next_vel, next_data);
+
+  vec4 next_neighbors = vec4(0.0);
+  vec4 next_top_data = vec4(0.0);
+  compute_topology_transition(in_node, next_neighbors, next_top_data);
 
   if (int(unif.fix_positions.x) == 1.0) {
     next_pos = in_node.pos.xyz;
@@ -350,9 +491,44 @@ Node run_reg_step(Node in_node) {
   Node out_node = {
     vec4(next_pos, next_heat),
     next_vel,
-    in_node.neighbors,
-    next_data
+    next_neighbors,
+    next_data,
+    next_top_data,
   };
+  return out_node;
+}
+
+Node step_inactive_node(Node in_node) {
+  Node out_node = in_node;
+  if (in_node.top_data != vec4(0.0)) {
+    int parent_n_id = int(in_node.data.x);
+    int parent_id = int(in_node.top_data[parent_n_id]);
+    int opposite_id = int(in_node.top_data[(parent_n_id + 2) % 4]);
+    
+    // this node starts at the avg xyz pos of its two pole nodes,
+    // and with 0 heat
+    vec3 parent_pos = imageLoad(in_pos, parent_id).xyz;
+    vec3 opposite_pos = imageLoad(in_pos, opposite_id).xyz;
+    vec4 starting_pos = vec4(0.5 * (parent_pos + opposite_pos), 0.0);
+
+    out_node = Node(
+      starting_pos,
+      vec4(0.0),
+      in_node.top_data,
+      vec4(-1.0),
+      vec4(-2.0));
+  }
+  return out_node;
+}
+
+Node run_reg_step(Node in_node) {
+  Node out_node = in_node;
+  if (in_node.neighbors.x == -2.0) {
+    out_node = step_inactive_node(in_node);
+  } else {
+    out_node = step_active_node(in_node);
+  }
+  
   return out_node;
 }
 
@@ -383,34 +559,6 @@ Node dummy_step2(Node in_node) {
   //out_node.neighbors = vec4(1.0);
   //out_node.data += vec4(1.0);
   return out_node;
-}
-
-bool push_value(uint val) {
-  uint cur_index = unif.iter_num & 1;
-  uint next_index = (unif.iter_num + 1) & 1;
-
-  uint start_ptr = store.start_ptrs[cur_index];
-  uint orig_ptr = atomicAdd(
-    store.end_ptrs[next_index], 1);
-  if (orig_ptr - start_ptr + 1 <= unif.queue_len) {
-    store.queue_mem[orig_ptr % unif.queue_len] = val;
-    return true;
-  }
-  return false;
-}
-
-bool pop_value(out uint res) {
-  uint cur_index = unif.iter_num & 1;
-  uint next_index = (unif.iter_num + 1) & 1;
-
-  uint end_ptr = store.end_ptrs[cur_index];
-  uint orig_ptr = atomicAdd(
-    store.start_ptrs[next_index], 1);
-  if (orig_ptr < end_ptr) {
-    res = store.queue_mem[orig_ptr % unif.queue_len];  
-    return true;
-  }
-  return false;
 }
 
 // TODO - we may actually have to use a separate compute stage
@@ -490,20 +638,10 @@ void main() {
     return;  
   }
 
-  Node in_node = {
-    imageLoad(in_pos, id),
-    imageLoad(in_vel, id),
-    imageLoad(in_neighbors, id),
-    imageLoad(in_data, id)
-  };
-
+  Node in_node = load_node(id);
   Node out_node = step(in_node);
+  store_node(id, out_node);
   
-  imageStore(out_pos, id, out_node.pos);
-  imageStore(out_vel, id, out_node.vel);
-  imageStore(out_neighbors, id, out_node.neighbors);
-  imageStore(out_data, id, out_node.data);
-
   //test_queue();
 
   // increment the current counter, and perform an exclusive step if
