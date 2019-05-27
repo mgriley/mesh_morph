@@ -199,9 +199,14 @@ int index_of_val(vec4 vals, float target_val) {
   return -1;
 }
 
-float read_edge_message(int my_id, int n_id, vec4 messages) {
+// Returns the index in my_id in the neighbors array of n_id
+int index_of_edge(int my_id, int n_id) {
   vec4 n_neighbors = imageLoad(in_neighbors, n_id);
-  return messages[index_of_val(n_neighbors, float(my_id))];
+  return index_of_val(n_neighbors, float(my_id));
+}
+
+float read_edge_message(int my_id, int n_id, vec4 messages) {
+  return messages[index_of_edge(my_id, n_id)];
 }
 
 vec4 compute_heat_emit(float cur_heat, vec4 node_neighbors) { 
@@ -240,17 +245,16 @@ float compute_next_heat(Node in_node) {
   float total_heat_in = 0.0;
   for (int i = 0; i < 4; ++i) {
     int n_index = int(in_node.neighbors[i]);
-    if (n_index != -1.0) {
-      float other_heat = imageLoad(in_pos, n_index).w;
-      if (in_node.pos.w < other_heat) {
-        // the heat in from this neighbor is the heat that it emits along
-        // the edge pointing to this node
-        vec4 other_neighbors = imageLoad(in_neighbors, n_index);
-        vec4 other_out_heats = compute_heat_emit(other_heat, other_neighbors);
-        // i is the index of edge a<->b according to a, and (i + 2) % 4 is
-        // the index of edge a<->b according to b
-        total_heat_in += other_out_heats[(i + 2) % 4];
-      }
+    if (n_index == -1.0) {
+      continue;
+    }
+    float other_heat = imageLoad(in_pos, n_index).w;
+    if (in_node.pos.w < other_heat) {
+      // the heat in from this neighbor is the heat that it emits along
+      // the edge pointing to this node
+      vec4 other_neighbors = imageLoad(in_neighbors, n_index);
+      vec4 other_out_heats = compute_heat_emit(other_heat, other_neighbors);
+      total_heat_in += other_out_heats[index_of_val(other_neighbors, float(id()))];
     }
   }
   total_heat_in += in_node.vel.w;
@@ -314,15 +318,16 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
     bool did_promote = false;
     for (int i = 0; i < 4; ++i) {
       int n_index = int(in_node.neighbors[i]);
-      if (n_index != -1) {
-        vec4 n_data = imageLoad(in_data, n_index);
-        if (int(n_data.w) == (i + 2) % 4) {
-          // neighbor has requested that this node be its clone
-          float gen_amt = length(n_data.xyz);
-          next_vel = vec4(normalize(n_data.xyz), gen_amt);
-          next_data = vec4(-1.0);
-          did_promote = true;
-        }
+      if (n_index == -1) {
+        continue;
+      }
+      vec4 n_data = imageLoad(in_data, n_index);
+      if (int(n_data.w) == index_of_edge(id(), n_index)) {
+        // neighbor has requested that this node be its clone
+        float gen_amt = length(n_data.xyz);
+        next_vel = vec4(normalize(n_data.xyz), gen_amt);
+        next_data = vec4(-1.0);
+        did_promote = true;
       }
     }
 
@@ -361,7 +366,7 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
     // traverse mesh if right conditions
     bool is_walking = false;
     if (!is_cloning && trans_noise.y < unif.src_trans_probs.y) {
-      // Note that neighbor could be a src, in which case
+      // TODO - Note that neighbor could be a src, in which case
       // we effectively eliminate a src.
       //int target_n = rand_neighbor_index(in_node.pos.xyz, in_node.neighbors);
       int target_n = directed_neighbor(in_node.pos.xyz, in_node.neighbors, in_node.vel.xyz);
@@ -589,16 +594,19 @@ Node step(Node in_node, out bool should_step) {
   return out_node;
 }
 
+// for debugging
 Node test_step(Node in_node) {
   Node out_node = in_node;
   out_node.pos += vec4(1.0,0.0,0.0,0.0);
   return out_node;
 }
 
+// for debugging
 Node dummy_step(Node in_node) {
   return in_node;
 }
 
+// for debugging
 Node dummy_step2(Node in_node) {
   Node out_node = in_node;
   out_node.pos += vec4(1.0);
@@ -630,6 +638,7 @@ void exclusive_step() {
     store.end_ptrs[next_index]);
 }
 
+// for debugging
 void test_queue() {
   int id = id();
   if (id == 0 || id == 1 || id == 2 || id == 3) {
@@ -656,27 +665,6 @@ void debug_main() {
     atomicAdd(store.step_counters[0], 1);
     atomicMax(store.step_counters[1], id);
   }
-}
-
-/*
-Getting spooky undefined behavior. Unsure what the issue is.
-*/
-void write_bug_main() {
-  int id = int(gl_GlobalInvocationID.x);
-  /*
-  if (id >= unif.node_count) {
-    return;
-  }
-  */
-  vec4 p = imageLoad(in_pos, id) + vec4(1.0);
-  vec4 v = imageLoad(in_vel, id) + vec4(1.0);
-  vec4 n = imageLoad(in_neighbors, id) + vec4(1.0);
-  vec4 d = imageLoad(in_data, id) + vec4(1.0);
-
-  imageStore(out_pos, id, p);
-  imageStore(out_vel, id, v);
-  imageStore(out_neighbors, id, n);
-  imageStore(out_data, id, d);
 }
 
 void main() {
