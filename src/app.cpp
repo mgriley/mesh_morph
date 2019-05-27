@@ -1922,10 +1922,10 @@ vector<uint32_t> gen_triangle_indices(AppState& state, MorphNodes& node_vecs) {
 vector<uint32_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
 
   // add a line for every valid edge
-  // use a set of edges to prevent duplicates
+  // use a set of edges to prevent duplicates and enforce correctness
   vector<uint32_t> indices;
   uint32_t node_count = node_vecs.pos_vec.size();
-  unordered_set<IndexPair, IndexPairHash> edge_set;
+  unordered_map<IndexPair, uint32_t, IndexPairHash>  edge_map;
   for (uint32_t i = 0; i < node_count; ++i) {
     vec4 neighbors = node_vecs.neighbors_vec[i];  
     // skip inactive nodes
@@ -1939,11 +1939,18 @@ vector<uint32_t> gen_line_indices(AppState& state, MorphNodes& node_vecs) {
       }
       IndexPair pair = i < n_index ?
         IndexPair(i, n_index) : IndexPair(n_index, i);
-      if (edge_set.find(pair) == edge_set.end()) {
-        edge_set.insert(pair);
-        indices.push_back(pair.first);
-        indices.push_back(pair.second);
-      }
+      edge_map[pair] += 1;
+    }
+  }
+  for (auto& entry : edge_map) {
+    auto& edge = entry.first;
+    if (entry.second == 2) {
+      // a complete undirected edge
+      indices.push_back(edge.first);
+      indices.push_back(edge.second);
+    } else {
+      printf("Error: edge (%u, %u) was found %u times\n",
+          edge.first, edge.second, entry.second);
     }
   }
   return indices;
@@ -2243,7 +2250,7 @@ void init_glfw(AppState& state) {
     throw std::runtime_error("Error on glfwInit()");
   }
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  state.win = glfwCreateWindow(800, 600, "morph",
+  state.win = glfwCreateWindow(1000, 600, "morph",
       nullptr, nullptr);
   assert(glfwVulkanSupported() == GLFW_TRUE);
   glfwSetWindowUserPointer(state.win, &state);

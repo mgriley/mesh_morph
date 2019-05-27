@@ -120,6 +120,14 @@ float hash3to1(vec3 p) {
 	return fract(dot(hash3(p),vec3(32.32,321.3,123.2)));
 }
 
+// Returns the normal as xyz, and length as w.
+// If v is a zero-vec, returns length 0 and a norm of (1,0,0)
+vec4 safe_norm(vec3 v) {
+  float len = length(v);
+  vec3 norm = len == 0.0 ? vec3(1.0,0.0,0.0) : v / len;
+  return vec4(norm, len);
+}
+
 Node load_node(int id) {
   Node node = {
     imageLoad(in_pos, id),
@@ -180,6 +188,20 @@ Node run_init_step(Node in_node) {
   Node out_node = in_node;
   out_node.vel = vel;
   return out_node;
+}
+
+int index_of_val(vec4 vals, float target_val) {
+  for (int i = 0; i < 4; ++i) {
+    if (vals[i] == target_val) {
+      return i;    
+    }
+  }
+  return -1;
+}
+
+float read_edge_message(int my_id, int n_id, vec4 messages) {
+  vec4 n_neighbors = imageLoad(in_neighbors, n_id);
+  return messages[index_of_val(n_neighbors, float(my_id))];
 }
 
 vec4 compute_heat_emit(float cur_heat, vec4 node_neighbors) { 
@@ -408,7 +430,7 @@ void compute_topology_transition(Node in_node, out vec4 next_neighbors,
         continue;
       }
       vec4 n_top_data = imageLoad(in_top_data, int(n_index));
-      float edge_request = n_top_data[(i + 2) % 4];
+      float edge_request = read_edge_message(id(), int(n_index), n_top_data);
       if (edge_request != -2.0) {
         next_neighbors[i] = edge_request;
       }
@@ -457,15 +479,15 @@ vec3 compute_next_pos(Node in_node) {
     int n_i = int(in_node.neighbors[i]);
     if (n_i != -1) {
       vec4 n_pos = imageLoad(in_pos, n_i);
-      vec3 delta_pos = n_pos.xyz - in_node.pos.xyz;
-      float spring_len = length(delta_pos);
+      vec4 delta_norm = safe_norm(n_pos.xyz - in_node.pos.xyz);
+      float spring_len = delta_norm.w;
       float spring_factor = spring_len < unif.target_spring_len.x ?
         unif.spring_coeffs.x : unif.spring_coeffs.y;
-      force += spring_factor * normalize(delta_pos) *
+      force += spring_factor * delta_norm.xyz *
         (spring_len - unif.target_spring_len.x);
 
       if (n_pos.w - in_node.pos.w > largest_delta) {
-        delta_heat = normalize(n_pos.xyz - in_node.pos.xyz);      
+        delta_heat = delta_norm.xyz;      
         largest_delta = n_pos.w - in_node.pos.w;
       }
     } else {
@@ -508,9 +530,14 @@ Node step_active_node(Node in_node) {
   return out_node;
 }
 
-Node step_inactive_node(Node in_node) {
+Node step_inactive_node(Node in_node, out bool should_step) {
+  // unless this node has a message written to it, we should not
+  // write to its location because another node may be sending
+  // it a message (which we do not wish to overwrite)
+  should_step = false;
   Node out_node = in_node;
   if (in_node.top_data.x != -2.0) {
+    should_step = true;
     int parent_n_id = int(in_node.data.x);
     int parent_id = int(in_node.top_data[parent_n_id]);
     int opposite_id = int(in_node.top_data[(parent_n_id + 2) % 4]);
@@ -525,7 +552,7 @@ Node step_inactive_node(Node in_node) {
     // for edge requests from the non-parent expanding node
     vec4 neighbors = in_node.top_data;
     vec4 opp_top_data = imageLoad(in_top_data, opposite_id);
-    float edge_request = opp_top_data[parent_n_id];
+    float edge_request = read_edge_message(parent_id, opposite_id, opp_top_data);
     if (edge_request != -2.0) {
       neighbors[(parent_n_id + 2) % 4] = edge_request;
     }
@@ -540,23 +567,24 @@ Node step_inactive_node(Node in_node) {
   return out_node;
 }
 
-Node run_reg_step(Node in_node) {
+Node run_reg_step(Node in_node, out bool should_step) {
+  should_step = true;
   Node out_node = in_node;
   if (in_node.neighbors.x == -2.0) {
-    out_node = step_inactive_node(in_node);
+    out_node = step_inactive_node(in_node, should_step);
   } else {
     out_node = step_active_node(in_node);
   }
-  
   return out_node;
 }
 
-Node step(Node in_node) {
+Node step(Node in_node, out bool should_step) {
+  should_step = true;
   Node out_node = in_node;
   if (unif.iter_num == 0) {
     out_node = run_init_step(in_node);
   } else {
-    out_node = run_reg_step(in_node);
+    out_node = run_reg_step(in_node, should_step);
   }
   return out_node;
 }
@@ -658,8 +686,11 @@ void main() {
   }
 
   Node in_node = load_node(id);
-  Node out_node = step(in_node);
-  store_node(id, out_node);
+  bool should_step = true;
+  Node out_node = step(in_node, should_step);
+  if (should_step) {
+    store_node(id, out_node);
+  }
   
   //test_queue();
 

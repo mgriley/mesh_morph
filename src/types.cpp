@@ -96,8 +96,8 @@ array<void*, ATTRIBUTES_COUNT> MorphNodes::data_ptrs() {
 string raw_node_str(MorphNode const& node) {
   array<char, 200> s;
   sprintf(s.data(),
-      "p: %s, v: %s, n: %s, d: %s, "
-      "t_d: %s",
+      "p%s v%s n%s d%s "
+      "t_d%s",
         vec4_str(node.pos).c_str(),
         vec4_str(node.vel).c_str(),
         vec4_str(node.neighbors).c_str(),

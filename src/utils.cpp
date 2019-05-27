@@ -63,13 +63,13 @@ string vec3_str(vec3 v) {
 
 string vec4_str(vec4 v) {
   array<char, 100> s;
-  sprintf(s.data(), "[%5.2f, %5.2f, %5.2f, %5.2f]", v[0], v[1], v[2], v[3]);
+  sprintf(s.data(), "[%5.2f %5.2f %5.2f %5.2f]", v[0], v[1], v[2], v[3]);
   return string(s.data());
 }
 
 string ivec4_str(ivec4 v) {
   array<char, 100> s;
-  sprintf(s.data(), "[%4d, %4d, %4d, %4d]", v[0], v[1], v[2], v[3]); 
+  sprintf(s.data(), "[%4d %4d %4d %4d]", v[0], v[1], v[2], v[3]); 
   return string(s.data());
 }
 
