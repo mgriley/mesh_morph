@@ -56,7 +56,7 @@ struct Controls {
   bool log_triangle_indices = false;
   bool log_durations = false;
   int num_zygote_samples = 40;
-  int inactive_node_count = 0;
+  int inactive_node_count = 1000;
   // for the simulation/animation pane
   int num_iters = 0;
   bool animating_sim = true;
