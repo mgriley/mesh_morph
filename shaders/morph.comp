@@ -213,7 +213,8 @@ int index_of_edge(int my_id, int n_id) {
 }
 
 // If my_id is the i^th neighbor of n_id (neighbors[i], that is),
-// returns messages[i]. If my_id is not a neigbor of n_id, undefined.
+// returns messages[i].
+// If my_id is not a neigbor of n_id, result is undefined
 float read_edge_message(int my_id, int n_id, vec4 messages) {
   return messages[index_of_edge(my_id, n_id)];
 }
