@@ -57,19 +57,19 @@ layout(push_constant) uniform Unifs {
   vec4 src_heat_gen_rate;
   // comps 1 min 0.0 max 1.0 speed 0.001 def 0.2
   vec4 heat_transfer_coeff;
-  // comps 1 min 0.0 max 3.0 speed 0.01 def 0.06
+  // comps 1 min 0.0 max 3.0 speed 0.01 def 0.0
   vec4 target_spring_len;
   // comps 2 min 0.0 max 1.0 speed 0.01 def 0.0 0.1
   vec4 spring_coeffs;
-  // comps 3 min 0.0 max 3.0 speed 0.01 def 0.0 0.25 0.25
+  // comps 3 min 0.0 max 3.0 speed 0.01 def 0.01 1.0 0.0
   vec4 force_coeffs;
   // comps 3 min 0.0 max 1.0 speed 0.001 def 0.05 0.0 0.0
   vec4 src_trans_probs;
   // comps 3 min 0.0 max 1.0 speed 0.005 def 1.0 1.0 0.5
   vec4 cloning_coeffs;
-  // comps 1 min 0.0 max 600.0 speed 0.1 def 40.0
+  // comps 1 min 0.0 max 600.0 speed 0.1 def 50.0
   vec4 cloning_interval;
-  // comps 1 min 0.0 max 20.0 speed 0.1 def 3.0
+  // comps 1 min 0.0 max 100.0 speed 0.1 def 20.0
   vec4 expansion_interval;
   // comps 1 min 0.0 max 3.0 speed 0.01 def 0.5
   vec4 annealing_threshold;
@@ -186,7 +186,7 @@ Node run_init_step(Node in_node) {
     unif.norm_src_pos.x + 0.5 * side_len);
   vec4 vel = vec4(0.0);
   if (id() == target_src_id) {
-    vel = vec4(normalize(unif.init_src_dir.xyz),
+    vel = vec4(safe_norm(unif.init_src_dir.xyz).xyz,
       unif.src_heat_gen_rate.x);
   }
   Node out_node = in_node;
@@ -194,6 +194,8 @@ Node run_init_step(Node in_node) {
   return out_node;
 }
 
+// Returns the index of target_val in the vec4, or
+// -1 if not found
 int index_of_val(vec4 vals, float target_val) {
   for (int i = 0; i < 4; ++i) {
     if (vals[i] == target_val) {
@@ -204,11 +206,14 @@ int index_of_val(vec4 vals, float target_val) {
 }
 
 // Returns the index in my_id in the neighbors array of n_id
+// Or -1 if not found
 int index_of_edge(int my_id, int n_id) {
   vec4 n_neighbors = imageLoad(in_neighbors, n_id);
   return index_of_val(n_neighbors, float(my_id));
 }
 
+// If my_id is the i^th neighbor of n_id (neighbors[i], that is),
+// returns messages[i]. If my_id is not a neigbor of n_id, undefined.
 float read_edge_message(int my_id, int n_id, vec4 messages) {
   return messages[index_of_edge(my_id, n_id)];
 }
@@ -266,6 +271,25 @@ float compute_next_heat(Node in_node) {
 }
 
 vec3 node_normal(vec3 node_pos, vec4 node_neighbors) {
+  vec3 avg_nor = vec3(0.0);
+  int num_nors = 0;
+  for (int i = 0; i < 4; ++i) {
+    int i_a = int(node_neighbors[i]);
+    int i_b = int(node_neighbors[(i + 1) % 4]);
+    if (i_a != -1 && i_b != -1) {
+      vec3 p_a = imageLoad(in_pos, i_a).xyz;
+      vec3 p_b = imageLoad(in_pos, i_b).xyz;
+      // TODO - why is this the 'up' direction, seems like the negative
+      // sign should be unneccessary
+      avg_nor += safe_norm(-cross(p_a - node_pos, p_b - node_pos)).xyz;
+      num_nors += 1;
+    }
+  }
+  return num_nors == 0 ? vec3(0.0,1.0,0.0) : avg_nor / float(num_nors);
+}
+
+// TODO
+vec3 old_node_normal(vec3 node_pos, vec4 node_neighbors) {
   vec3 nor = vec3(0.0,1.0,0.0);
   for (int i = 0; i < 4; ++i) {
     int i_a = int(node_neighbors[i]);
@@ -275,7 +299,7 @@ vec3 node_normal(vec3 node_pos, vec4 node_neighbors) {
       vec3 p_b = imageLoad(in_pos, i_b).xyz;
       // TODO - why is this the 'up' direction, seems like the negative
       // sign should be unneccessary
-      nor = normalize(-cross(p_a - node_pos, p_b - node_pos));
+      nor = safe_norm(-cross(p_a - node_pos, p_b - node_pos)).xyz;
       break;
     }
   }
@@ -326,10 +350,11 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
         continue;
       }
       vec4 n_data = imageLoad(in_data, n_index);
-      if (int(n_data.w) == index_of_edge(id(), n_index)) {
+      int my_index = index_of_edge(id(), n_index);
+      if (my_index >= 0 && int(n_data.w) == my_index) {
         // neighbor has requested that this node be its clone
         float gen_amt = length(n_data.xyz);
-        next_vel = vec4(normalize(n_data.xyz), gen_amt);
+        next_vel = vec4(safe_norm(n_data.xyz).xyz, gen_amt);
         next_data = vec4(-1.0);
         did_promote = true;
       }
@@ -356,9 +381,9 @@ void compute_source_transition(Node in_node, out vec4 out_vel, out vec4 out_data
       // pi * cloning_coeffs.z is the desired angle b/w the two vecs
       float tangent_len = tan(0.5 * pi * unif.cloning_coeffs.z);
       vec3 tangent_vec =
-        tangent_len * normalize(cross(in_node.vel.xyz, trans_noise));
-      vec3 my_dir = normalize(in_node.vel.xyz - tangent_vec);
-      vec3 clone_dir = normalize(in_node.vel.xyz + tangent_vec);
+        tangent_len * safe_norm(cross(in_node.vel.xyz, trans_noise)).xyz;
+      vec3 my_dir = safe_norm(in_node.vel.xyz - tangent_vec).xyz;
+      vec3 clone_dir = safe_norm(in_node.vel.xyz + tangent_vec).xyz;
 
       float clone_gen_amt = unif.cloning_coeffs.y * in_node.vel.w;
       //int target_n = rand_neighbor_index(in_node.pos.xyz, in_node.neighbors);
@@ -504,13 +529,17 @@ vec3 compute_next_pos(Node in_node) {
       is_fixed = true;
     }
   }
+  // apply a force along the normal
+  // the intent is to fake a kind of repulsion from the interior of the tree
+  vec3 mesh_normal = node_normal(in_node.pos.xyz, in_node.neighbors);
+  force += unif.force_coeffs.x * mesh_normal;
 
   if (in_node.vel.w != 0.0) {
     force += unif.force_coeffs.y * in_node.vel.xyz;
   } else {
     force += unif.force_coeffs.z * delta_heat;
   }
-  // anneal if low heat (eh, this did not work out)
+  // anneal if low heat
   //force *= clamp(in_node.pos.w, 0.0, 1.0);
   if (in_node.pos.w < unif.annealing_threshold.x) {
     force = vec3(0.0);
