@@ -2,4 +2,4 @@
 
 Generate trees by deforming a mesh.
 
-Please see here for info: https://portfolio.mrilez.com/posts/tree-generator/
+Please see here for info: https://portfolio.mriley.ca/tree-generator/
